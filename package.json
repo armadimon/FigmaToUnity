@@ -1,0 +1,24 @@
+{
+  "name": "com.simonoliver.unitytofigma",
+  "displayName": "UnityToFigma",
+  "description": "Tool to build Figma documents and Assets as native Unity UI",
+  "author": {
+    "name": "Simon Oliver",
+    "url": "https://www.simonoliver.com"
+  },
+  "keywords": [
+    "unity",
+    "figma"
+  ],
+  "license": "MIT",
+  "unity": "6000.0",
+  "unityRelease": "0f1",
+  "version": "1.0.9",
+  "type": "library",
+  "hideInEditor": false,
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "2.0.1-preview.1",
+    "com.unity.test-framework": "1.3.9",
+    "com.unity.textmeshpro": "2.0.1"
+  }
+}

@@ -1,0 +1,586 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
+using UnityEngine.UI;
+using UnityToFigma.Editor.FigmaApi;
+using UnityToFigma.Editor.Fonts;
+using UnityToFigma.Editor.Nodes;
+using UnityToFigma.Editor.PrototypeFlow;
+using UnityToFigma.Editor.Import;
+using UnityToFigma.Editor.Settings;
+using UnityToFigma.Editor.Utils;
+using UnityToFigma.Runtime.UI;
+using Object = UnityEngine.Object;
+
+namespace UnityToFigma.Editor
+{
+    /// <summary>
+    ///  Manages Figma importing and document creation
+    /// </summary>
+    public static class UnityToFigmaImporter
+    {
+        
+        /// <summary>
+        /// The settings asset, containing preferences for importing
+        /// </summary>
+        private static UnityToFigmaSettings s_UnityToFigmaSettings;
+        
+        /// <summary>
+        /// We'll cache the access token in editor Player prefs
+        /// </summary>
+        private const string FIGMA_PERSONAL_ACCESS_TOKEN_PREF_KEY = "FIGMA_PERSONAL_ACCESS_TOKEN";
+
+        public const string PROGRESS_BOX_TITLE = "Importing Figma Document";
+
+        /// <summary>
+        /// Figma imposes a limit on the number of images in a single batch. This is batch size
+        /// (This is a bit of a guess - 650 is rejected)
+        /// </summary>
+        private const int MAX_SERVER_RENDER_IMAGE_BATCH_SIZE = 300;
+
+        /// <summary>
+        /// Cached personal access token, retrieved from PlayerPrefs
+        /// </summary>
+        private static string s_PersonalAccessToken;
+        
+        /// <summary>
+        /// Active canvas used for construction
+        /// </summary>
+        private static Canvas s_SceneCanvas;
+
+        /// <summary>
+        /// The flowScreen controller to mange prototype functionality
+        /// </summary>
+        private static PrototypeFlowController s_PrototypeFlowController;
+
+        [MenuItem("UnityToFigma/Sync Document")]
+        static void Sync()
+        {
+            SyncAsync();
+        }
+        
+        private static async void SyncAsync()
+        {
+            var requirementsMet = CheckRequirements();
+            if (!requirementsMet) return;
+
+            var figmaFile = await DownloadFigmaDocument(s_UnityToFigmaSettings.FileId);
+            if (figmaFile == null) return;
+
+            var pageNodeList = FigmaDataUtils.GetPageNodes(figmaFile);
+
+            if (s_UnityToFigmaSettings.OnlyImportSelectedPages)
+            {
+                var downloadPageNodeIdList = pageNodeList.Select(p => p.id).ToList();
+                downloadPageNodeIdList.Sort();
+
+                var settingsPageDataIdList = s_UnityToFigmaSettings.PageDataList.Select(p => p.NodeId).ToList();
+                settingsPageDataIdList.Sort();
+
+                if (!settingsPageDataIdList.SequenceEqual(downloadPageNodeIdList))
+                {
+                    ReportError("The pages found in the Figma document have changed - check your settings file and Sync again when ready", "");
+                    
+                    // Apply the new page list to serialized data and select to allow the user to change
+                    s_UnityToFigmaSettings.RefreshForUpdatedPages(figmaFile);
+                    Selection.activeObject = s_UnityToFigmaSettings;
+                    EditorUtility.SetDirty(s_UnityToFigmaSettings);
+                    AssetDatabase.SaveAssetIfDirty(s_UnityToFigmaSettings);
+                    AssetDatabase.Refresh();
+                    
+                    return;
+                }
+                
+                var enabledPageIdList = s_UnityToFigmaSettings.PageDataList.Where(p => p.Selected).Select(p => p.NodeId).ToList();
+
+                if (enabledPageIdList.Count <= 0)
+                {
+                    ReportError("'Import Selected Pages' is selected, but no pages are selected for import", "");
+                    SelectSettings();
+                    return;
+                }
+
+                pageNodeList = pageNodeList.Where(p => enabledPageIdList.Contains(p.id)).ToList();
+            }
+
+            await ImportDocument(s_UnityToFigmaSettings.FileId, figmaFile, pageNodeList);
+            
+        }
+
+        /// <summary>
+        /// Check to make sure all requirements are met before syncing
+        /// </summary>
+        /// <returns></returns>
+        public static bool CheckRequirements() {
+            if (!CheckDocumentDownloadRequirements())
+                return false;
+
+            if (Shader.Find("TextMeshPro/Mobile/Distance Field")==null)
+            {
+                EditorUtility.DisplayDialog("Text Mesh Pro" ,"You need to install TestMeshPro Essentials. Use Window->Text Mesh Pro->Import TMP Essential Resources","OK");
+                return false;
+            }
+            
+            // Check all requirements for run time if required
+            if (s_UnityToFigmaSettings.BuildPrototypeFlow)
+            {
+                if (!CheckRunTimeRequirements())
+                    return false;
+            }
+            
+            return true;
+            
+        }
+
+        public static bool CheckDocumentDownloadRequirements(UnityToFigmaSettings settingsOverride = null)
+        {
+            if (settingsOverride != null)
+                s_UnityToFigmaSettings = settingsOverride;
+
+            // Find the settings asset if it exists
+            if (s_UnityToFigmaSettings == null)
+                s_UnityToFigmaSettings = UnityToFigmaSettingsProvider.FindSettingsAsset();
+            
+            if (s_UnityToFigmaSettings == null)
+            {
+                if (
+                    EditorUtility.DisplayDialog("No UnityToFigma Settings File",
+                        "Create a new UnityToFigma settings file? ", "Create", "Cancel"))
+                {
+                    s_UnityToFigmaSettings =
+                        UnityToFigmaSettingsProvider.GenerateUnityToFigmaSettingsAsset();
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            
+            if (s_UnityToFigmaSettings.FileId.Length == 0)
+            {
+                EditorUtility.DisplayDialog("Missing Figma Document" ,"Figma Document Url is not valid, please enter valid URL","OK");
+                return false;
+            }
+            
+            // Get stored personal access key
+            s_PersonalAccessToken = PlayerPrefs.GetString(FIGMA_PERSONAL_ACCESS_TOKEN_PREF_KEY);
+
+            if (string.IsNullOrEmpty(s_PersonalAccessToken))
+            {
+                var setToken = RequestPersonalAccessToken();
+                if (!setToken) return false;
+            }
+            
+            if (Application.isPlaying)
+            {
+                EditorUtility.DisplayDialog("UnityToFigma Importer","Please exit play mode before importing", "OK");
+                return false;
+            }
+
+            return true;
+        }
+
+
+        private static bool CheckRunTimeRequirements()
+        {
+            if (string.IsNullOrEmpty(s_UnityToFigmaSettings.RunTimeAssetsScenePath))
+            {
+                if (
+                    EditorUtility.DisplayDialog("No UnityToFigma Scene set",
+                        "Use current scene for generating prototype flow? ", "OK", "Cancel"))
+                {
+                    var currentScene = SceneManager.GetActiveScene();
+                    s_UnityToFigmaSettings.RunTimeAssetsScenePath = currentScene.path;
+                    EditorUtility.SetDirty(s_UnityToFigmaSettings);
+                    AssetDatabase.SaveAssetIfDirty(s_UnityToFigmaSettings);
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            
+            // If current scene doesnt match, switch
+            if (SceneManager.GetActiveScene().path != s_UnityToFigmaSettings.RunTimeAssetsScenePath)
+            {
+                if (EditorUtility.DisplayDialog("UnityToFigma Scene",
+                        "Current Scene doesnt match Runtime asset scene - switch scenes?", "OK", "Cancel"))
+                {
+                    EditorSceneManager.OpenScene(s_UnityToFigmaSettings.RunTimeAssetsScenePath);
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            
+            var placement = FigmaRuntimePlacementResolver.Resolve(s_UnityToFigmaSettings, () => CreateCanvas(true));
+            if (!placement.Success)
+            {
+                EditorUtility.DisplayDialog("UnityToFigma", placement.ErrorMessage, "OK");
+                return false;
+            }
+
+            s_SceneCanvas = placement.Canvas;
+            s_PrototypeFlowController = placement.Controller;
+            return true;
+        }
+
+        [MenuItem("UnityToFigma/Select Settings File")]
+        static void SelectSettings()
+        {
+            var settingsAsset=UnityToFigmaSettingsProvider.FindSettingsAsset();
+            Selection.activeObject = settingsAsset;
+        }
+
+        [MenuItem("UnityToFigma/Set Personal Access Token")]
+        static void SetPersonalAccessToken()
+        {
+            RequestPersonalAccessToken();
+        }
+        
+        /// <summary>
+        /// Launch window to request personal access token
+        /// </summary>
+        /// <returns></returns>
+        static bool RequestPersonalAccessToken()
+        {
+            s_PersonalAccessToken = PlayerPrefs.GetString(FIGMA_PERSONAL_ACCESS_TOKEN_PREF_KEY);
+            var newAccessToken = EditorInputDialog.Show( "Personal Access Token", "Please enter your Figma Personal Access Token (you can create in the 'Developer settings' page)",s_PersonalAccessToken);
+            if (!string.IsNullOrEmpty(newAccessToken))
+            {
+                s_PersonalAccessToken = newAccessToken;
+                Debug.Log(FigmaTokenLogMessages.GetPersonalAccessTokenSavedMessage());
+                PlayerPrefs.SetString(FIGMA_PERSONAL_ACCESS_TOKEN_PREF_KEY,s_PersonalAccessToken);
+                PlayerPrefs.Save();
+                return true;
+            }
+
+            return false;
+        }
+
+
+        private static Canvas CreateCanvas(bool createEventSystem)
+        {
+            // Canvas
+            var canvasGameObject = new GameObject("Canvas");
+            var canvas=canvasGameObject.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvasGameObject.AddComponent<GraphicRaycaster>();
+
+            if (!createEventSystem) return canvas;
+
+            var existingEventSystem = Object.FindObjectOfType<EventSystem>();
+            if (existingEventSystem == null)
+            {
+                // Create new event system
+                var eventSystemGameObject = new GameObject("EventSystem");
+                existingEventSystem=eventSystemGameObject.AddComponent<EventSystem>();
+            }
+
+            var pointerInputModule = Object.FindObjectOfType<PointerInputModule>();
+            if (pointerInputModule == null)
+            {
+                // TODO - Allow for new input system?
+                existingEventSystem.gameObject.AddComponent<StandaloneInputModule>();
+            }
+
+            return canvas;
+        }
+        
+
+        private static void ReportError(string message,string error)
+        {
+            EditorUtility.DisplayDialog("UnityToFigma Error",message,"Ok");
+            Debug.LogWarning($"{message}\n {error}\n");
+        }
+
+        public static async Task<FigmaFile> DownloadFigmaDocument(string fileId)
+        {
+            // Download figma document
+            EditorUtility.DisplayProgressBar(PROGRESS_BOX_TITLE, $"Downloading file", 0);
+            try
+            {
+                var debugOutputPath = s_UnityToFigmaSettings == null
+                    ? null
+                    : new FigmaImportPathResolver(s_UnityToFigmaSettings).GetDocumentDebugJsonFilePath();
+                var figmaTask = FigmaApiUtils.GetFigmaDocument(fileId, s_PersonalAccessToken, debugOutputPath);
+                await figmaTask;
+                return figmaTask.Result;
+            }
+            catch (Exception e)
+            {
+                ReportError(
+                    "Error downloading Figma document - Check your personal access key and document url are correct",
+                    e.ToString());
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
+            return null;
+        }
+
+        private static async Task ImportDocument(string fileId, FigmaFile figmaFile, List<Node> downloadPageNodeList)
+        {
+
+            // Build a list of page IDs to download
+            var downloadPageIdList = downloadPageNodeList.Select(p => p.id).ToList();
+
+            var pathResolver = new FigmaImportPathResolver(s_UnityToFigmaSettings);
+            // Ensure we have all required directories (does not delete existing assets)
+            pathResolver.EnsureImportDirectoriesExist();
+
+            var importManifest = FigmaImportManifestStore.LoadOrCreate(pathResolver, fileId);
+            var importReport = new FigmaImportReport();
+            
+            // Next build a list of all externally referenced components not included in the document (eg
+            // from external libraries) and download
+            var externalComponentList = FigmaDataUtils.FindMissingComponentDefinitions(figmaFile);
+            
+            // TODO - Implement external components
+            // This is currently not working as only returns a depth of 1 of returned nodes. Need to get original files too
+            /*
+            FigmaFileNodes activeExternalComponentsData=null;
+            if (externalComponentList.Count > 0)
+            {
+                EditorUtility.DisplayProgressBar(PROGRESS_BOX_TITLE, $"Getting external component data", 0);
+                try
+                {
+                    var figmaTask = FigmaApiUtils.GetFigmaFileNodes(fileId, s_PersonalAccessToken,externalComponentList);
+                    await figmaTask;
+                    activeExternalComponentsData = figmaTask.Result;
+                }
+                catch (Exception e)
+                {
+                    EditorUtility.ClearProgressBar();
+                    ReportError("Error downloading external component Data",e.ToString());
+                    return;
+                }
+            }
+            */
+
+            // For any missing component definitions, we are going to find the first instance and switch it to be
+            // The source component. This has to be done early to ensure download of server images
+            //FigmaFileUtils.ReplaceMissingComponents(figmaFile,externalComponentList);
+            
+            // Some of the nodes, we'll want to identify to use Figma server side rendering (eg vector shapes, SVGs)
+            // First up create a list of nodes we'll substitute with rendered images
+            var serverRenderNodes = FigmaDataUtils.FindAllServerRenderNodesInFile(figmaFile,externalComponentList,downloadPageIdList);
+            
+            // Request a render of these nodes on the server if required
+            var serverRenderData=new List<FigmaServerRenderData>();
+            if (serverRenderNodes.Count > 0)
+            {
+                var allNodeIds = serverRenderNodes.Select(serverRenderNode => serverRenderNode.SourceNode.id).ToList();
+                // As the API has an upper limit of images that can be rendered in a single request, we'll need to batch
+                var batchCount = Mathf.CeilToInt((float)allNodeIds.Count / MAX_SERVER_RENDER_IMAGE_BATCH_SIZE);
+                for (var i = 0; i < batchCount; i++)
+                {
+                    var startIndex = i * MAX_SERVER_RENDER_IMAGE_BATCH_SIZE;
+                    var nodeBatch = allNodeIds.GetRange(startIndex,
+                        Mathf.Min(MAX_SERVER_RENDER_IMAGE_BATCH_SIZE, allNodeIds.Count - startIndex));
+                    var serverNodeCsvList = string.Join(",", nodeBatch);
+                    EditorUtility.DisplayProgressBar(PROGRESS_BOX_TITLE, $"Downloading server-rendered image data {i+1}/{batchCount}",(float)i/(float)batchCount);
+                    try
+                    {
+                        var figmaTask = FigmaApiUtils.GetFigmaServerRenderData(fileId, s_PersonalAccessToken,
+                            serverNodeCsvList, s_UnityToFigmaSettings.ServerRenderImageScale);
+                        await figmaTask;
+                        serverRenderData.Add(figmaTask.Result);
+                    }
+                    catch (Exception e)
+                    {
+                        EditorUtility.ClearProgressBar();
+                        ReportError("Error downloading Figma Server Render Image Data", e.ToString());
+                        return;
+                    }
+                }
+            }
+
+            // Make sure that existing downloaded assets are in the correct format
+            FigmaApiUtils.CheckExistingAssetProperties(s_UnityToFigmaSettings);
+            
+            // Track fills that are actually used. This is needed as FIGMA has a way of listing any bitmap used rather than active 
+            var foundImageFills = FigmaDataUtils.GetAllImageFillIdsFromFile(figmaFile,downloadPageIdList);
+            
+            // Get image fill data for the document (list of urls to download any bitmap data used)
+            FigmaImageFillData activeFigmaImageFillData; 
+            EditorUtility.DisplayProgressBar(PROGRESS_BOX_TITLE, $"Downloading image fill data", 0);
+            try
+            {
+                var figmaTask = FigmaApiUtils.GetDocumentImageFillData(fileId, s_PersonalAccessToken);
+                await figmaTask;
+                activeFigmaImageFillData = figmaTask.Result;
+            }
+            catch (Exception e)
+            {
+                EditorUtility.ClearProgressBar();
+                ReportError("Error downloading Figma Image Fill Data",e.ToString());
+                return;
+            }
+            
+            // Generate a list of all items that need to be downloaded
+            var downloadList =
+                FigmaApiUtils.GenerateDownloadQueue(activeFigmaImageFillData,foundImageFills, serverRenderData, serverRenderNodes, s_UnityToFigmaSettings, importReport);
+
+            // Download all required files
+            await FigmaApiUtils.DownloadFiles(downloadList, s_UnityToFigmaSettings, importReport);
+            
+
+            // Generate font mapping data
+            var figmaFontMapTask = FontManager.GenerateFontMapForDocument(figmaFile,
+                s_UnityToFigmaSettings.EnableGoogleFontsDownloads, s_UnityToFigmaSettings);
+            await figmaFontMapTask;
+            var fontMap = figmaFontMapTask.Result;
+
+
+            var componentData = new FigmaComponentData
+            { 
+                MissingComponentDefinitionsList = externalComponentList, 
+            };
+            
+            // Stores necessary importer data needed for document generator.
+            // ImportManifest is consulted when saving screen prefabs (node id + PathUpdatePolicy) so reimports reuse paths.
+            var figmaImportProcessData = new FigmaImportProcessData
+            {
+                Settings=s_UnityToFigmaSettings,
+                PathResolver = pathResolver,
+                ImportManifest = importManifest,
+                ImportReport = importReport,
+                SourceFile = figmaFile,
+                ComponentData = componentData,
+                ServerRenderNodes = serverRenderNodes,
+                PrototypeFlowController = s_PrototypeFlowController,
+                FontMap = fontMap,
+                PrototypeFlowStartPoints = FigmaDataUtils.GetAllPrototypeFlowStartingPoints(figmaFile),
+                SelectedPagesForImport = downloadPageNodeList,
+                NodeLookupDictionary = FigmaDataUtils.BuildNodeLookupDictionary(figmaFile)
+            };
+            FigmaScreenPrefabPathSelector.ReserveManifestPathsForCurrentImport(figmaImportProcessData);
+            
+            
+            // Clear the existing screens on the flowScreen controller
+            if (s_UnityToFigmaSettings.BuildPrototypeFlow)
+            {
+                if (figmaImportProcessData.PrototypeFlowController)
+                    figmaImportProcessData.PrototypeFlowController.ClearFigmaScreens();
+            }
+            else
+            {
+                s_SceneCanvas = CreateCanvas(false);
+            }
+
+            try
+            {
+                FigmaAssetGenerator.BuildFigmaFile(s_SceneCanvas, figmaImportProcessData);
+                FigmaImportManifestReconciler.ReconcileAfterImport(figmaImportProcessData, fileId);
+            }
+            catch (Exception e)
+            {
+                ReportError("Error generating Figma document. Check log for details", e.ToString());
+                EditorUtility.ClearProgressBar();
+                CleanUpPostGeneration();
+                return;
+            }
+            finally
+            {
+                FigmaImportManifestStore.MarkDirtyAndSave(figmaImportProcessData.ImportManifest);
+            }
+           
+            
+            // Lastly, for prototype mode, instantiate the default flowScreen and set the scaler up appropriately
+            if (s_UnityToFigmaSettings.BuildPrototypeFlow)
+            {
+                // Make sure all required default elements are present
+                var screenController = figmaImportProcessData.PrototypeFlowController;
+                
+                // Find default flow start position
+                screenController.PrototypeFlowInitialScreenId =  FigmaDataUtils.FindPrototypeFlowStartScreenId(figmaImportProcessData.SourceFile);;
+
+                if (screenController.ScreenParentTransform == null)
+                    screenController.ScreenParentTransform = FigmaRuntimePlacementResolver.FindOrCreateScreenParent(
+                        screenController,
+                        FigmaRuntimePlacementResolver.GetEffectiveScreenParentName(s_UnityToFigmaSettings));
+
+                if (screenController.TransitionEffect == null)
+                {
+                    // Instantiate and apply the default transition effect (loaded from package assets folder)
+                    var defaultTransitionAnimationEffect = AssetDatabase.LoadAssetAtPath("Packages/com.simonoliver.unitytofigma/UnityToFigma/Assets/TransitionFadeToBlack.prefab", typeof(GameObject)) as GameObject;
+                    var transitionObject = (GameObject) PrefabUtility.InstantiatePrefab(defaultTransitionAnimationEffect,
+                        screenController.transform.transform);
+                    screenController.TransitionEffect =
+                        transitionObject.GetComponent<TransitionEffect>();
+                    
+                    UnityUiUtils.SetTransformFullStretch(transitionObject.transform as RectTransform);
+                }
+
+                // Set start flowScreen on stage by default                
+                var defaultScreenData = figmaImportProcessData.PrototypeFlowController.StartFlowScreen;
+                if (defaultScreenData != null)
+                {
+                    var defaultScreenTransform = defaultScreenData.FigmaScreenPrefab.transform as RectTransform;
+                    if (defaultScreenTransform != null)
+                    {
+                        var defaultSize = defaultScreenTransform.sizeDelta;
+                        var canvasScaler = s_SceneCanvas.GetComponent<CanvasScaler>();
+                        if (canvasScaler == null) canvasScaler = s_SceneCanvas.gameObject.AddComponent<CanvasScaler>();
+                        canvasScaler.referenceResolution = defaultSize;
+                        // If we are a vertical template, drive by width
+                        canvasScaler.matchWidthOrHeight = (defaultSize.x>defaultSize.y) ? 1f : 0f; // Use height as driver
+                        canvasScaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+                    }
+
+                    var screenInstance=(GameObject)PrefabUtility.InstantiatePrefab(defaultScreenData.FigmaScreenPrefab, figmaImportProcessData.PrototypeFlowController.ScreenParentTransform);
+                    figmaImportProcessData.PrototypeFlowController.SetCurrentScreen(screenInstance,defaultScreenData.FigmaNodeId,true);
+                }
+                // Write CS file with references to flowScreen name
+                if (s_UnityToFigmaSettings.CreateScreenNameCSharpFile) ScreenNameCodeGenerator.WriteScreenNamesCodeFile(figmaImportProcessData.ScreenPrefabs, s_UnityToFigmaSettings);
+            }
+            CleanUpPostGeneration();
+            EditorUtility.ClearProgressBar();
+            AssetDatabase.Refresh();
+
+            LogImportSummary(figmaImportProcessData.ImportReport);
+        }
+
+        static void LogImportSummary(FigmaImportReport report)
+        {
+            if (report == null)
+                return;
+
+            Debug.Log(report.FormatSummaryLine());
+            foreach (var m in report.Messages)
+                Debug.Log($"[UnityToFigma] {m}");
+
+            if (report.FailedCount > 0 || report.OrphanedCount > 0 || report.ManifestRemovedCount > 0)
+            {
+                EditorUtility.DisplayDialog("UnityToFigma import finished",
+                    report.FormatSummaryLine() +
+                    (report.Messages.Count > 0
+                        ? "\n\nSee Console for details."
+                        : ""),
+                    "OK");
+            }
+        }
+
+        /// <summary>
+        ///  Clean up any leftover assets post-generation
+        /// </summary>
+        private static void CleanUpPostGeneration()
+        {
+            if (!s_UnityToFigmaSettings.BuildPrototypeFlow)
+            {
+                // Destroy temporary canvas
+                Object.DestroyImmediate(s_SceneCanvas.gameObject);
+            }
+        }
+    }
+}
