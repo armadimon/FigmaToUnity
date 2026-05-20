@@ -322,16 +322,34 @@ namespace UnityToFigma.Editor.UI
             m_StatusMessage = "Selection saved. Run UnityToFigma → Sync Document to import.";
         }
 
+        // Returns only the top-most selected nodes: a node is added when it's Selected AND every descendant
+        // is also Selected (so the figma /nodes call returns its full subtree). If any descendant was
+        // unchecked, walk into children so the user's exclusions are honored — that node's parent is no
+        // longer a clean "import this whole subtree" pick.
         static List<string> CollectSelectedNodeIds(List<NodeRow> rows)
         {
             var ids = new List<string>();
             void Walk(NodeRow r)
             {
-                if (r.Selected) ids.Add(r.Id);
+                if (r.Selected && AllDescendantsSelected(r))
+                {
+                    ids.Add(r.Id);
+                    return;
+                }
                 foreach (var c in r.Children) Walk(c);
             }
             foreach (var r in rows) Walk(r);
             return ids;
+        }
+
+        static bool AllDescendantsSelected(NodeRow r)
+        {
+            foreach (var c in r.Children)
+            {
+                if (!c.Selected) return false;
+                if (!AllDescendantsSelected(c)) return false;
+            }
+            return true;
         }
     }
 }
