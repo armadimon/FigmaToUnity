@@ -14,10 +14,15 @@ namespace UnityToFigma.Editor.Settings
         public UnityToFigmaSettingsProvider(string path, SettingsScope scopes, IEnumerable<string> keywords = null)
             : base(path, scopes, keywords)
         {
+            // EditorStyles is not yet initialized when [SettingsProvider] runs at editor boot; styles are built lazily in OnGUI.
+        }
+
+        private void EnsureStyles()
+        {
+            if (m_RedStyle != null) return;
             m_RedStyle = new GUIStyle(EditorStyles.label);
             m_RedStyle.normal.textColor = UnityEngine.Color.red;
-            
-            m_GreenStyle= new GUIStyle(EditorStyles.label);
+            m_GreenStyle = new GUIStyle(EditorStyles.label);
             m_GreenStyle.normal.textColor = UnityEngine.Color.green;
         }
 
@@ -49,6 +54,7 @@ namespace UnityToFigma.Editor.Settings
 
         public override void OnGUI(string searchContext)
         {
+            EnsureStyles();
             if (unityToFigmaSettingsAsset == null)
             {
                 GUILayout.Label("Create UnityToFigma Settings Asset");

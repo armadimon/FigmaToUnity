@@ -1,7 +1,7 @@
 {
-  "name": "com.simonoliver.unitytofigma",
-  "displayName": "UnityToFigma",
-  "description": "Tool to build Figma documents and Assets as native Unity UI",
+  "name": "com.armadimon.figmatounity",
+  "displayName": "FigmaToUnity",
+  "description": "Import Figma documents and assets as native Unity UI. Forked from simonoliver/UnityToFigma via geuneda/UnityToFigma; renamed to reflect Figma → Unity direction and patched for EditorStyles lazy-init.",
   "author": {
     "name": "Simon Oliver",
     "url": "https://www.simonoliver.com"
