@@ -103,8 +103,11 @@ namespace UnityToFigma.Editor.UI
             using (new EditorGUILayout.HorizontalScope())
             {
                 page.Expanded = EditorGUILayout.Foldout(page.Expanded, GUIContent.none, true, EditorStyles.foldout);
-                page.Selected = EditorGUILayout.ToggleLeft(
-                    $"{page.Name}  ({page.Id})", page.Selected, GUILayout.ExpandWidth(true));
+                bool prevSelected = page.Selected;
+                bool nextSelected = EditorGUILayout.ToggleLeft(
+                    $"{page.Name}  ({page.Id})", prevSelected, GUILayout.ExpandWidth(true));
+                if (nextSelected != prevSelected)
+                    SetPageSelectedCascade(page, nextSelected);
                 if (GUILayout.Button("Load nodes", GUILayout.Width(100)))
                     LoadPageChildrenAsync(page);
             }
@@ -131,8 +134,11 @@ namespace UnityToFigma.Editor.UI
                     node.Expanded = EditorGUILayout.Foldout(node.Expanded, GUIContent.none, true, EditorStyles.foldout);
                 else
                     GUILayout.Space(16);
-                node.Selected = EditorGUILayout.ToggleLeft(
-                    $"[{node.Type}] {node.Name}  ({node.Id})", node.Selected, GUILayout.ExpandWidth(true));
+                bool prevSelected = node.Selected;
+                bool nextSelected = EditorGUILayout.ToggleLeft(
+                    $"[{node.Type}] {node.Name}  ({node.Id})", prevSelected, GUILayout.ExpandWidth(true));
+                if (nextSelected != prevSelected)
+                    SetNodeSelectedCascade(node, nextSelected);
             }
             if (node.Expanded)
             {
@@ -142,9 +148,24 @@ namespace UnityToFigma.Editor.UI
             }
         }
 
+        // Parent → descendants: toggling a node flips every descendant to the same state so that
+        // unticking a frame also unticks its children (otherwise the saved selection would still
+        // include hidden child ids the user thought they removed).
+        static void SetNodeSelectedCascade(NodeRow node, bool selected)
+        {
+            node.Selected = selected;
+            foreach (var c in node.Children) SetNodeSelectedCascade(c, selected);
+        }
+
+        static void SetPageSelectedCascade(PageRow page, bool selected)
+        {
+            page.Selected = selected;
+            foreach (var c in page.Children) SetNodeSelectedCascade(c, selected);
+        }
+
         void ApplyToAllPages(bool selected)
         {
-            foreach (var p in m_PageRows.Values) p.Selected = selected;
+            foreach (var p in m_PageRows.Values) SetPageSelectedCascade(p, selected);
         }
 
         async void RefreshPagesAsync()
