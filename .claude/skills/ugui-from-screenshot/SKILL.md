@@ -773,9 +773,25 @@ internal class CommandScript : IRunCommand
 
 ---
 
-## Phase 2A: Patch (Path A 전용 — UnityToFigma 결과 보정)
+## Phase 2A: Patch (Path A 전용 — FigmaToUnity 결과 보정)
 
-이 단계는 **UnityToFigma 가 만들어 둔 결과 위에 차이만 덧칠하는 단계**다. 전체 재구성 금지.
+이 단계는 **FigmaToUnity 가 만들어 둔 결과 위에 차이만 덧칠하는 단계**다. 전체 재구성 금지.
+
+### Phase 2A.0: AI 컨벤션 후처리 (Patch 진입 전 1회)
+
+FigmaToUnity 패키지의 `UnityToFigma/Postprocess/*` 메뉴가 Sync 직후 자동으로 띄우는 Sync Options 창의 "AI 컨벤션 후처리 컨텍스트 생성 + 클립보드 복사" 를 Apply 하면 `{ImportRoot}/Debug/PostprocessContext.md` 가 만들어진다. 이 컨텍스트를 받아 본 스킬이 다음을 수행:
+
+- Screen 프리팹 명명 (프로젝트 컨벤션 — 해당 프로젝트의 CLAUDE.md/agent_docs 우선)
+- 깊이 2 자식 노드명 접두 정리 (`Btn_/Txt_/Img_/Scroll_` 등)
+- Figma `reactions`/구조 분석 기반 Button 컴포넌트 부착
+- 9-slice 후보 스프라이트의 `spriteBorder` 갱신
+- 동명 MonoBehaviour 부착 + `[SerializeField]` 자동 매핑 보완
+- LayoutGroup 케이스별 부착
+
+자세한 휴리스틱·체크리스트: `references/figma-to-unity-convention.md`.
+
+이후 본 Phase 2A.1~2A.4 의 unity-mcp 보정 (color/font/RT/SafeArea 등) 으로 이어진다.
+
 
 ### Step 2A.1: 비교 캡처
 
@@ -788,7 +804,7 @@ internal class CommandScript : IRunCommand
 
 | 카테고리                      | 보정 행동 (모두 unity-mcp `Unity_RunCommand` 내부에서 처리)                                                                                                       |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 폰트 매칭 실패 (다른 폰트로 대체됨)     | `GameObject.Find(name).GetComponent<TextMeshProUGUI>().font = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(path)` + `result.RegisterObjectModification(...)` |
+| 폰트가 디자인과 다르게 렌더링                | **이 스킬은 직접 교체하지 않는다.** 패키지의 `FigmaMissingFontWindow` 가 다운로드 실패한 family 를 모아 보여주고, 사용자가 ObjectField 로 TMP_FontAsset 을 직접 선택해 일괄 교체한다. 한글이 `□` 로 나오는 경우에만 `Setup TMP Korean Fallback` 메뉴로 Dynamic SDF fallback 등록 (Step 1A.5c). |
 | 색상 mismatch               | `image.color = ColorUtility.TryParseHtmlString("#..", out var c) ? c : image.color` + `RegisterObjectModification`                                  |
 | 텍스트 누락/오타                 | `tmp.text = "..."` 직접 대입 (쉘 이스케이프 문제 자체가 없음 → 구버전의 `batch_set_texts.py` 불필요)                                                                          |
 | Image Sprite 누락 (다운로드 실패) | 사용자에게 보고. 임의 placeholder 금지.                                                                                                                          |
@@ -1314,8 +1330,7 @@ ServerRenderedImages/ : N 벡터 PNG
 Fonts/      : N 폰트 (Google Fonts 다운로드 포함)
 
 ### 보정 내역 (Phase 2A)
-- Iteration 1: TitleText 폰트 매칭 실패 → ProjectStandard 로 교체
-- Iteration 2: PrimaryButton 색상 #1A1A2EFF 로 보정
+- Iteration 1: PrimaryButton 색상 #1A1A2EFF 로 보정
 - ...
 
 ### 라운드 코너 처리 결과 (UnityToFigma SDF 자동 처리)
@@ -1325,7 +1340,7 @@ Fonts/      : N 폰트 (Google Fonts 다운로드 포함)
 - 검출 실패(roundedSkipped): K 개 (대개 0)
 
 ### 사용자 후속 작업 안내
-- 폰트 매칭 실패 항목: 프로젝트에 TTF 추가 후 동기화 재실행
+- 폰트 교체가 필요한 family 는 패키지의 `UnityToFigma/Postprocess/Open Missing Font Window` 메뉴에서 사용자가 직접 ObjectField 로 선택. 한글 누락 시 Setup TMP Korean Fallback 만 추가 호출.
 - 임포트되지 않은 효과(Inner Shadow/Blur 등): 미지원이므로 별도 구현 필요
 - (선택) PrototypeFlow 가 필요하면 UGUI_FIGMA_BUILD_PROTOTYPE_FLOW=true 로 재동기화
 - (선택) ImportRoot 변경: Assets/UnityToFigmaSettings.asset 의 ImportRoot 필드
@@ -1391,6 +1406,7 @@ Assets/Screenshots/resolution_*.png -- 삭제 가능
 
 ## References
 
+- `./references/figma-to-unity-convention.md` -- **AI 컨벤션 후처리 필독**. 명명 규칙(`Btn_/Txt_/Img_/Scroll_`), MonoBehaviour 매핑, 9-slice 판정, LayoutGroup 규칙. 패키지 측 `UnityToFigma/Postprocess/*` 메뉴와 짝을 이룬다.
 - `./references/unity-to-figma-workflow.md` -- **Path A 필독**. FigmaToUnity 일괄 임포트 흐름, 다이얼로그 우회, 한계, 보정 패턴 (unity-cli 표기는 Phase 0 매핑 표 기준으로 변환)
 - `./references/round-corner-policy.md` -- **전역 필독**. 라운드 코너 자동 처리 금지 정책
 - `./references/unity-cli-gotchas.md` -- 구버전 unity-cli 브릿지 시행착오 정리. **unity-mcp 환경에서도 동일한 등가 변환이 필요한 함정들** (예: GameObject 중복 이름, asset add-to-scene 의 부모 누락 등) 을 보존한다.
@@ -1398,6 +1414,8 @@ Assets/Screenshots/resolution_*.png -- 삭제 가능
 - `./references/anchoring-strategy.md` -- 반응형 앵커링 패턴 가이드 (주로 Path B 용)
 - `./references/resolution-profiles.md` -- 다해상도 검증 프로파일
 - `./references/figma-to-ugui-mapping.md` -- Figma 속성 → UGUI 매핑 상세 (Path B 보정 시 참조)
+- `./references/font-fallback-policy.md` -- 한글/CJK 폰트 Dynamic SDF Fallback 정책
+- `./references/figma-prep-policy.md` -- Sync 전 Figma 1차 정리 정책
 
 ## Scripts
 

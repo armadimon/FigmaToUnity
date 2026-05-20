@@ -103,9 +103,13 @@ namespace UnityToFigma.Editor.Fonts
                 }
 
                 if (newFontMapEntry.FontAsset == null)
+                {
+                    // 다운로드 실패 / 미시도 / 로컬에 없음 — Postprocess 의 누락 폰트 GUI 가 사후에 사용자에게 직접 선택받기 위해 추적.
+                    UnityToFigma.Editor.Postprocess.FigmaMissingFontTracker.Record(fontFamily, fontWeight);
                     newFontMapEntry.FontAsset = GetClosestFont(allProjectFontAssets,fontFamily,fontWeight);
-                
-                
+                }
+
+
                 // TODO - We might want to handle generation of material variations here too
             }
 
