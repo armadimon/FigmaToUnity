@@ -50,10 +50,15 @@ namespace UnityToFigma.Editor.FigmaApi
             "Connection reset",
             "timed out",
             "timeout",
+            "Unknown Error", // Unity 6 macOS surfaces HTTP/2 stream INTERNAL_ERROR as result=ConnectionError + error="Unknown Error" + code=200 (partial body).
         };
 
         static bool IsTransientFailure(UnityWebRequest req)
         {
+            // ConnectionError covers HTTP/2 stream aborts that leave responseCode=200 but a truncated body.
+            // DataProcessingError covers gzip/chunked decode failures mid-stream.
+            if (req.result == UnityWebRequest.Result.ConnectionError ||
+                req.result == UnityWebRequest.Result.DataProcessingError) return true;
             var code = req.responseCode;
             if (code == 0 || code == 408 || code == 429 || (code >= 500 && code < 600)) return true;
             var err = req.error ?? string.Empty;
