@@ -2,6 +2,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using UnityToFigma.Editor.FigmaApi;
+using UnityToFigma.Editor.Utils;
 
 namespace UnityToFigma.Editor.Nodes
 {
@@ -48,7 +49,7 @@ namespace UnityToFigma.Editor.Nodes
             targetRectTransform.sizeDelta = new Vector2(figmaNode.size.x, figmaNode.size.y);
 
             //Add a layout element and set its preferred size
-            LayoutElement layoutElement = targetRectTransform.gameObject.AddComponent<LayoutElement>();
+            LayoutElement layoutElement = UnityUiUtils.GetOrAddComponent<LayoutElement>(targetRectTransform.gameObject);
             layoutElement.preferredWidth = figmaNode.size.x;
             layoutElement.preferredHeight = figmaNode.size.y;
 
@@ -63,11 +64,9 @@ namespace UnityToFigma.Editor.Nodes
 
             // Some nodes will not have a constraints node (eg SECTION nodes)
             if (constraintsSourceNode.constraints!=null) ApplyFigmaConstraints(targetRectTransform, constraintsSourceNode, figmaParentNode);
-            
-            // We'll also use these properties to apply pivot after, where required
-            // We disable center pivot for Text nodes, as this creates behaviour different from Figma when autosizing
-            if (figmaNode.type==NodeType.TEXT) centerPivot = false;
-            if (centerPivot) SetPivot(targetRectTransform, new Vector2(0.5f, 0.5f));
+
+            // Always center pivot for consistent behavior across all node types (including TEXT and root screens)
+            SetPivot(targetRectTransform, new Vector2(0.5f, 0.5f));
         }
     
         /// <summary>
@@ -144,7 +143,7 @@ namespace UnityToFigma.Editor.Nodes
             targetRectTransform.sizeDelta = new Vector2(figmaNode.absoluteBoundingBox.width, figmaNode.absoluteBoundingBox.height);
 
             //Add a layout element and set its preferred size
-            LayoutElement layoutElement = targetRectTransform.gameObject.AddComponent<LayoutElement>();
+            LayoutElement layoutElement = UnityUiUtils.GetOrAddComponent<LayoutElement>(targetRectTransform.gameObject);
             layoutElement.preferredWidth = figmaNode.absoluteBoundingBox.width;
             layoutElement.preferredHeight = figmaNode.absoluteBoundingBox.height;
 
@@ -155,16 +154,15 @@ namespace UnityToFigma.Editor.Nodes
             var figmaParentNodePosition = figmaParentNode.absoluteBoundingBox != null
                 ? new Vector2(figmaParentNode.absoluteBoundingBox.x, figmaParentNode.absoluteBoundingBox.y)
                 : Vector2.zero;
-            
+
             targetRectTransform.anchoredPosition=new Vector2(figmaNode.absoluteBoundingBox.x-figmaParentNodePosition.x,
                 -(figmaNode.absoluteBoundingBox.y-figmaParentNodePosition.y));
-            
+
             // Some nodes will not have a constraints node (eg SECTION nodes)
             if (figmaNode.constraints!=null) ApplyFigmaConstraints(targetRectTransform, figmaNode, figmaParentNode);
-            
-            // We'll also use these properties to apply pivot after, where required
-            if (centerPivot) SetPivot(targetRectTransform, new Vector2(0.5f, 0.5f));
-            
+
+            // Always center pivot for consistent behavior across all node types
+            SetPivot(targetRectTransform, new Vector2(0.5f, 0.5f));
         }
         
         /// <summary>

@@ -12,63 +12,80 @@ namespace UnityToFigma.Editor.Nodes
     public static class FigmaLayoutManager
     {
         /// <summary>
-        /// Applies layout properties for a given node to a gameObject, using Vertical/Horizontal layout groups
+        /// Applies layout properties for a given node to a gameObject, using Vertical/Horizontal layout groups.
+        /// When the node implements scrolling, builds a standard uGUI ScrollView tree:
+        ///   nodeGameObject (ScrollRect) -> Viewport (RectMask2D) -> Content (LayoutGroup + ContentSizeFitter)
         /// </summary>
         /// <param name="nodeGameObject"></param>
         /// <param name="node"></param>
         /// <param name="figmaImportProcessData"></param>
-        /// <param name="scrollContentGameObject">Generated scroll content object (if generated)</param>
+        /// <param name="scrollContentGameObject">The generated Content GameObject (when scrolling is implemented). Child nodes should be parented here.</param>
         public static void ApplyLayoutPropertiesForNode( GameObject nodeGameObject,Node node,
             FigmaImportProcessData figmaImportProcessData,out GameObject scrollContentGameObject)
         {
-            
+
             // Depending on whether scrolling is applied, we may want to add layout to this object or to the content
             // holder
-            
+
             var targetLayoutObject = nodeGameObject;
             scrollContentGameObject = null;
-            
+
             // Check scrolling requirements
             var implementScrolling = node.type == NodeType.FRAME && node.overflowDirection != Node.OverflowDirection.NONE;
             if (implementScrolling)
             {
-                // This Frame implements scrolling, so we need to add in appropriate functionality
-                
-                // Add in a rect mask to implement clipping
-                if (node.clipsContent) UnityUiUtils.GetOrAddComponent<RectMask2D>(nodeGameObject);
+                // Build standard uGUI ScrollView tree:
+                //   nodeGameObject (ScrollRect)
+                //     └─ Viewport (RectMask2D) – stretches to fill ScrollRect
+                //          └─ Content (LayoutGroup + ContentSizeFitter when AutoLayout is enabled)
 
-                // Create the content clip and parent to this object
-                scrollContentGameObject = new GameObject($"{node.name}_ScrollContent", typeof(RectTransform));
-                var scrollContentRectTransform = scrollContentGameObject.transform as RectTransform;
+                // Create Viewport as a child of nodeGameObject. Stretches to fill, top-left pivot.
+                var viewportGameObject = new GameObject($"{node.name}_Viewport", typeof(RectTransform));
+                var viewportRectTransform = (RectTransform)viewportGameObject.transform;
+                viewportRectTransform.SetParent(nodeGameObject.transform, false);
+                viewportRectTransform.anchorMin = new Vector2(0, 0);
+                viewportRectTransform.anchorMax = new Vector2(1, 1);
+                viewportRectTransform.pivot = new Vector2(0, 1);
+                viewportRectTransform.offsetMin = Vector2.zero;
+                viewportRectTransform.offsetMax = Vector2.zero;
+
+                // Viewport gets the RectMask2D so clipping happens here, not on the ScrollRect host
+                if (node.clipsContent) UnityUiUtils.GetOrAddComponent<RectMask2D>(viewportGameObject);
+
+                // Create Content as a child of Viewport. Top-left pivot/anchor so size grows down-right naturally.
+                scrollContentGameObject = new GameObject($"{node.name}_Content", typeof(RectTransform));
+                var scrollContentRectTransform = (RectTransform)scrollContentGameObject.transform;
+                scrollContentRectTransform.SetParent(viewportGameObject.transform, false);
                 scrollContentRectTransform.pivot = new Vector2(0, 1);
-                scrollContentRectTransform.anchorMin = scrollContentRectTransform.anchorMax =new Vector2(0,1);
-                scrollContentRectTransform.anchoredPosition=Vector2.zero;
-                scrollContentRectTransform.SetParent(nodeGameObject.transform, false);
-                
+                scrollContentRectTransform.anchorMin = scrollContentRectTransform.anchorMax = new Vector2(0, 1);
+                scrollContentRectTransform.anchoredPosition = Vector2.zero;
+
+                // Wire up the ScrollRect on the host node
                 var scrollRectComponent = UnityUiUtils.GetOrAddComponent<ScrollRect>(nodeGameObject);
-                scrollRectComponent.content = scrollContentGameObject.transform as RectTransform;
+                scrollRectComponent.viewport = viewportRectTransform;
+                scrollRectComponent.content = scrollContentRectTransform;
                 scrollRectComponent.horizontal =
-                    node.overflowDirection is Node.OverflowDirection.HORIZONTAL_SCROLLING 
+                    node.overflowDirection is Node.OverflowDirection.HORIZONTAL_SCROLLING
                         or Node.OverflowDirection.HORIZONTAL_AND_VERTICAL_SCROLLING;
-
                 scrollRectComponent.vertical =
-                    node.overflowDirection is Node.OverflowDirection.VERTICAL_SCROLLING 
+                    node.overflowDirection is Node.OverflowDirection.VERTICAL_SCROLLING
                         or Node.OverflowDirection.HORIZONTAL_AND_VERTICAL_SCROLLING;
 
-
-                // If using layout, we need to use content size fitter to ensure proper sizing for child components
-                if (node.layoutMode != Node.LayoutMode.NONE)
+                // ContentSizeFitter is only added when AutoLayout will actually attach a LayoutGroup to Content –
+                // i.e. EnableAutoLayout is on AND the Figma node uses auto layout. Without a LayoutGroup the CSF
+                // has no preferred size source and would collapse the Content rect.
+                if (figmaImportProcessData.Settings.EnableAutoLayout && node.layoutMode != Node.LayoutMode.NONE)
                 {
                     var contentSizeFitter = UnityUiUtils.GetOrAddComponent<ContentSizeFitter>(scrollContentGameObject);
                     contentSizeFitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
                     contentSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
                 }
 
-                // Apply layout to this content clip
+                // LayoutGroup (if any) is applied to Content
                 targetLayoutObject = scrollContentGameObject;
             }
-            
-            
+
+
             // Ignore if layout mode is NONE or layout disabled
             if (node.layoutMode == Node.LayoutMode.NONE || !figmaImportProcessData.Settings.EnableAutoLayout) return;
             

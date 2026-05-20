@@ -6,6 +6,7 @@ using UnityEngine.UI;
 using UnityToFigma.Editor.FigmaApi;
 using UnityToFigma.Editor.Fonts;
 using UnityToFigma.Editor.Import;
+using UnityToFigma.Editor.Settings;
 using UnityToFigma.Editor.Utils;
 using UnityToFigma.Runtime.UI;
 using Color = UnityEngine.Color;
@@ -178,26 +179,31 @@ namespace UnityToFigma.Editor.Nodes
                         }
                     }
                     
-                    // If no material variation, ignore
-                    if (!hasShadowEffect && node.strokes.Length == 0) return;
-                    
+                    // Outline application is gated by the project-level setting so each project can choose
+                    // whether to use the Figma TMP shader's outline path or supply its own solution.
+                    var applyOutline = node.strokes.Length > 0
+                        && figmaImportProcessData.Settings.TextOutline == TextOutlineMode.ShaderUnderlay;
+
+                    // If no material variation needed, ignore
+                    if (!hasShadowEffect && !applyOutline) return;
+
                     var shadowColor = hasShadowEffect
                         ? FigmaDataUtils.ToUnityColor(shadowEffect.color) : UnityEngine.Color.white;
                     var shadowDistance = shadowEffect != null
                         ? new Vector2(shadowEffect.offset.x, -shadowEffect.offset.y) : Vector2.zero;
 
-                    var outlineColor = node.strokes.Length > 0
+                    var outlineColor = applyOutline
                         ? FigmaDataUtils.GetUnityFillColor(node.strokes[0]) : UnityEngine.Color.white;
                     var outlineWidth = 0f;
-                    if (node.strokes.Length > 0)
+                    if (applyOutline)
                     {
-                        // We'll calculate target outline width as a factor of font size to match 
+                        // We'll calculate target outline width as a factor of font size to match
                         outlineWidth = 4.0f*node.strokeWeight / node.style.fontSize;
                         // Clamp to 0.5
                         outlineWidth = Mathf.Clamp(outlineWidth, 0, 0.5f);
                     }
                     var effectMaterialPreset = FontManager.GetEffectMaterialPreset(matchingFontMapping,
-                        hasShadowEffect, shadowColor, shadowDistance, node.strokes.Length>0, outlineColor, outlineWidth, figmaImportProcessData.Settings);
+                        hasShadowEffect, shadowColor, shadowDistance, applyOutline, outlineColor, outlineWidth, figmaImportProcessData.Settings);
                     text.fontMaterial = effectMaterialPreset;
 
                     

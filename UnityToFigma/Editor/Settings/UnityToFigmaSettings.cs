@@ -54,6 +54,10 @@ namespace UnityToFigma.Editor.Settings
         [HideInInspector]
         public List<FigmaNodeSelection> NodeSelections = new ();
 
+        [Header("Text Rendering")]
+        [Tooltip("How to render Figma text outlines (stroke). ShaderUnderlay creates a TMP material variant using the Figma TMP shader's outline keyword. Disabled drops Figma stroke information for text so each project can apply its own outline solution.")]
+        public TextOutlineMode TextOutline = TextOutlineMode.ShaderUnderlay;
+
         [Header("Import Paths & Policies")]
         [Tooltip("Root folder under Assets for generated import output (no trailing slash).")]
         public string ImportRoot = UnityToFigmaImportSettingsDefaults.ImportRoot;
@@ -136,6 +140,12 @@ namespace UnityToFigma.Editor.Settings
             }
             PageDataList.OrderBy(p => p.NodeId);
         }
+    }
+
+    public enum TextOutlineMode
+    {
+        ShaderUnderlay = 0,
+        Disabled = 1,
     }
 
     [Serializable]
