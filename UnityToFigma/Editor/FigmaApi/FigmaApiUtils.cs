@@ -304,6 +304,82 @@ namespace UnityToFigma.Editor.FigmaApi
         }
 
         /// <summary>
+        /// Download a Figma document by issuing a single GET /v1/files/{key}/nodes?ids=PAGE_IDS&amp;geometry=paths
+        /// instead of the full GET file endpoint. Used when OnlyImportSelectedPages is on so the response payload
+        /// stays small (one entry per selected page rather than the whole document), which both reduces HTTP/2
+        /// stream abort risk and lets users limit the data they're pulling on tight rate-limit budgets.
+        /// </summary>
+        /// <param name="fileId">Figma File Id</param>
+        /// <param name="accessToken">Figma Access Token</param>
+        /// <param name="selectedPageIds">Canvas (page) node ids to import</param>
+        /// <returns>A synthesized FigmaFile whose document.children is restricted to the selected pages.</returns>
+        public static async Task<FigmaFile> GetFigmaDocumentBySelectedPages(string fileId, string accessToken,
+            IList<string> selectedPageIds)
+        {
+            if (selectedPageIds == null || selectedPageIds.Count == 0)
+                throw new ArgumentException("selectedPageIds is empty", nameof(selectedPageIds));
+
+            // Get the lite document so we have the canonical document root + metadata.
+            var litePromise = GetFigmaDocumentPagesLite(fileId, accessToken);
+            var liteFile = await litePromise;
+            if (liteFile?.document == null)
+                throw new Exception("Pages-lite fetch returned no document");
+
+            var joined = string.Join(",", selectedPageIds);
+            var url = $"https://api.figma.com/v1/files/{fileId}/nodes?ids={Uri.EscapeDataString(joined)}&geometry=paths";
+            var webRequest = await SendGetWithRetryAsync(url, accessToken);
+            if (webRequest.result != UnityWebRequest.Result.Success)
+            {
+                throw new Exception(
+                    $"{FormatWebRequestFailure(webRequest, "Figma nodes (selected pages) API")} url={url}.");
+            }
+
+            FigmaFileNodes fileNodes;
+            try
+            {
+                var settings = new JsonSerializerSettings()
+                {
+                    DefaultValueHandling = DefaultValueHandling.Include,
+                    MissingMemberHandling = MissingMemberHandling.Ignore,
+                    NullValueHandling = NullValueHandling.Ignore,
+                };
+                fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(webRequest.downloadHandler.text, settings);
+            }
+            catch (Exception e)
+            {
+                throw new Exception($"Problem decoding Figma nodes JSON: {e}");
+            }
+
+            if (fileNodes?.nodes == null)
+                throw new Exception("Figma nodes response missing 'nodes' map");
+
+            // Replace document.children with only the selected page subtrees (preserving order from user selection).
+            var pageChildren = new List<Node>();
+            foreach (var pageId in selectedPageIds)
+            {
+                if (fileNodes.nodes.TryGetValue(pageId, out var miniFile) && miniFile?.document != null)
+                    pageChildren.Add(miniFile.document);
+                else
+                    Debug.LogWarning($"[FigmaToUnity] Selected page id '{pageId}' missing in nodes response.");
+            }
+            liteFile.document.children = pageChildren;
+
+            // Merge components/styles from each page's mini-file (figma returns them per-node entry).
+            var mergedComponents = new Dictionary<string, Component>();
+            var mergedStyles = new Dictionary<string, Style>();
+            foreach (var kv in fileNodes.nodes)
+            {
+                if (kv.Value?.components != null)
+                    foreach (var c in kv.Value.components) mergedComponents[c.Key] = c.Value;
+                if (kv.Value?.styles != null)
+                    foreach (var s in kv.Value.styles) mergedStyles[s.Key] = s.Value;
+            }
+            liteFile.components = mergedComponents;
+            liteFile.styles = mergedStyles;
+            return liteFile;
+        }
+
+        /// <summary>
         /// Download a Figma doc from server and deserialize
         /// </summary>
         /// <param name="fileId">Figma File Id</param>

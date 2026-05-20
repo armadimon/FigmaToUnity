@@ -82,47 +82,59 @@ namespace UnityToFigma.Editor
             var requirementsMet = CheckRequirements();
             if (!requirementsMet) return;
 
-            var figmaFile = await DownloadFigmaDocument(s_UnityToFigmaSettings.FileId);
-            if (figmaFile == null) return;
-
-            var pageNodeList = FigmaDataUtils.GetPageNodes(figmaFile);
+            FigmaFile figmaFile;
+            List<Node> pageNodeList;
 
             if (s_UnityToFigmaSettings.OnlyImportSelectedPages)
             {
-                var downloadPageNodeIdList = pageNodeList.Select(p => p.id).ToList();
-                downloadPageNodeIdList.Sort();
-
-                var settingsPageDataIdList = s_UnityToFigmaSettings.PageDataList.Select(p => p.NodeId).ToList();
-                settingsPageDataIdList.Sort();
-
-                if (!settingsPageDataIdList.SequenceEqual(downloadPageNodeIdList))
-                {
-                    ReportError("The pages found in the Figma document have changed - check your settings file and Sync again when ready", "");
-                    
-                    // Apply the new page list to serialized data and select to allow the user to change
-                    s_UnityToFigmaSettings.RefreshForUpdatedPages(figmaFile);
-                    Selection.activeObject = s_UnityToFigmaSettings;
-                    EditorUtility.SetDirty(s_UnityToFigmaSettings);
-                    AssetDatabase.SaveAssetIfDirty(s_UnityToFigmaSettings);
-                    AssetDatabase.Refresh();
-                    
-                    return;
-                }
-                
-                var enabledPageIdList = s_UnityToFigmaSettings.PageDataList.Where(p => p.Selected).Select(p => p.NodeId).ToList();
-
+                var enabledPageIdList = s_UnityToFigmaSettings.PageDataList
+                    .Where(p => p.Selected).Select(p => p.NodeId).ToList();
                 if (enabledPageIdList.Count <= 0)
                 {
-                    ReportError("'Import Selected Pages' is selected, but no pages are selected for import", "");
+                    ReportError("'Import Selected Pages' is selected, but no pages are selected for import.", "");
                     SelectSettings();
                     return;
                 }
 
-                pageNodeList = pageNodeList.Where(p => enabledPageIdList.Contains(p.id)).ToList();
+                figmaFile = await DownloadFigmaDocumentBySelectedPages(
+                    s_UnityToFigmaSettings.FileId, enabledPageIdList);
+                if (figmaFile == null) return;
+
+                pageNodeList = FigmaDataUtils.GetPageNodes(figmaFile);
+            }
+            else
+            {
+                figmaFile = await DownloadFigmaDocument(s_UnityToFigmaSettings.FileId);
+                if (figmaFile == null) return;
+                pageNodeList = FigmaDataUtils.GetPageNodes(figmaFile);
             }
 
             await ImportDocument(s_UnityToFigmaSettings.FileId, figmaFile, pageNodeList);
-            
+        }
+
+        /// <summary>
+        /// Download a synthesized FigmaFile that only contains the user-selected pages.
+        /// Calls GET /v1/files/{key}/nodes?ids=PAGE_IDS instead of the full GET file endpoint.
+        /// </summary>
+        public static async Task<FigmaFile> DownloadFigmaDocumentBySelectedPages(string fileId, IList<string> selectedPageIds)
+        {
+            EditorUtility.DisplayProgressBar(PROGRESS_BOX_TITLE,
+                $"Downloading {selectedPageIds.Count} selected page(s)", 0);
+            try
+            {
+                return await FigmaApiUtils.GetFigmaDocumentBySelectedPages(fileId, s_PersonalAccessToken, selectedPageIds);
+            }
+            catch (Exception e)
+            {
+                ReportError(
+                    "Error downloading Figma pages - Check your personal access key and selected page list.",
+                    e.ToString());
+                return null;
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
         }
 
         /// <summary>
