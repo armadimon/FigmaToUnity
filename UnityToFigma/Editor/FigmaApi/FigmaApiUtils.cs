@@ -87,13 +87,33 @@ namespace UnityToFigma.Editor.FigmaApi
 
         public static FigmaFile DeserializeFigmaFile(string json)
         {
-            var settings = new JsonSerializerSettings()
+            return JsonConvert.DeserializeObject<FigmaFile>(json, CreateFigmaJsonSettings());
+        }
+
+        /// <summary>
+        /// Shared JsonSerializerSettings used for every figma response. Tolerates null primitives
+        /// inside numeric arrays (figma occasionally emits e.g. relativeTransform = [[null,null,null],...])
+        /// by swallowing the conversion error and leaving the slot at default(0).
+        /// </summary>
+        public static JsonSerializerSettings CreateFigmaJsonSettings()
+        {
+            return new JsonSerializerSettings
             {
                 DefaultValueHandling = DefaultValueHandling.Include,
                 MissingMemberHandling = MissingMemberHandling.Ignore,
                 NullValueHandling = NullValueHandling.Ignore,
+                Error = (sender, args) =>
+                {
+                    var ex = args.ErrorContext.Error;
+                    var msg = ex?.Message ?? string.Empty;
+                    if (ex is InvalidCastException ||
+                        msg.IndexOf("Null object cannot be converted", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        msg.IndexOf("Error converting value {null}", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        args.ErrorContext.Handled = true;
+                    }
+                },
             };
-            return JsonConvert.DeserializeObject<FigmaFile>(json, settings);
         }
 
         // Figma's edge sometimes terminates large HTTP/2 responses with INTERNAL_ERROR (Curl error 92). The plugin
@@ -289,13 +309,7 @@ namespace UnityToFigma.Editor.FigmaApi
             }
             try
             {
-                var settings = new JsonSerializerSettings()
-                {
-                    DefaultValueHandling = DefaultValueHandling.Include,
-                    MissingMemberHandling = MissingMemberHandling.Ignore,
-                    NullValueHandling = NullValueHandling.Ignore,
-                };
-                return JsonConvert.DeserializeObject<FigmaFile>(webRequest.downloadHandler.text, settings);
+                return JsonConvert.DeserializeObject<FigmaFile>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
             }
             catch (Exception e)
             {
@@ -337,13 +351,7 @@ namespace UnityToFigma.Editor.FigmaApi
             FigmaFileNodes fileNodes;
             try
             {
-                var settings = new JsonSerializerSettings()
-                {
-                    DefaultValueHandling = DefaultValueHandling.Include,
-                    MissingMemberHandling = MissingMemberHandling.Ignore,
-                    NullValueHandling = NullValueHandling.Ignore,
-                };
-                fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(webRequest.downloadHandler.text, settings);
+                fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
             }
             catch (Exception e)
             {
@@ -420,17 +428,7 @@ namespace UnityToFigma.Editor.FigmaApi
 
             try
             {
-                // Create a settings object to ignore missing members and null fields that sometimes come from Figma
-                JsonSerializerSettings settings = new JsonSerializerSettings()
-                {
-                    DefaultValueHandling = DefaultValueHandling.Include,
-                    MissingMemberHandling = MissingMemberHandling.Ignore,
-                    NullValueHandling = NullValueHandling.Ignore,
-                };
-                
-                // Deserialize the document
-                figmaFile = JsonConvert.DeserializeObject<FigmaFile>(webRequest.downloadHandler.text, settings);
-
+                figmaFile = JsonConvert.DeserializeObject<FigmaFile>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
                 Debug.Log($"Figma file downloaded, name {figmaFile.name}");
             }
             catch (Exception e)
@@ -474,7 +472,7 @@ namespace UnityToFigma.Editor.FigmaApi
             try
             {
                 figmaServerRenderData =
-                    JsonConvert.DeserializeObject<FigmaServerRenderData>(webRequest.downloadHandler.text);
+                    JsonConvert.DeserializeObject<FigmaServerRenderData>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
             }
             catch (Exception e)
             {
@@ -505,7 +503,7 @@ namespace UnityToFigma.Editor.FigmaApi
             }
             try
             {
-                imageFillData = JsonConvert.DeserializeObject<FigmaImageFillData>(webRequest.downloadHandler.text);
+                imageFillData = JsonConvert.DeserializeObject<FigmaImageFillData>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
             }
             catch (Exception e)
             {
@@ -538,7 +536,7 @@ namespace UnityToFigma.Editor.FigmaApi
             }
             try
             {
-                fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(webRequest.downloadHandler.text);
+                fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
                 if (!string.IsNullOrEmpty(debugOutputPath))
                 {
                     var outputDirectory = Path.GetDirectoryName(debugOutputPath);

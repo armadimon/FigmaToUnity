@@ -218,13 +218,7 @@ namespace UnityToFigma.Editor.UI
                 if (req.result != UnityWebRequest.Result.Success)
                     throw new Exception($"HTTP {req.responseCode} {req.error}");
 
-                var settings = new JsonSerializerSettings()
-                {
-                    DefaultValueHandling = DefaultValueHandling.Include,
-                    MissingMemberHandling = MissingMemberHandling.Ignore,
-                    NullValueHandling = NullValueHandling.Ignore,
-                };
-                var fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(req.downloadHandler.text, settings);
+                var fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(req.downloadHandler.text, FigmaApiUtils.CreateFigmaJsonSettings());
                 page.Children.Clear();
                 if (fileNodes?.nodes != null && fileNodes.nodes.TryGetValue(page.Id, out var miniFile))
                 {
