@@ -32,6 +32,69 @@ namespace UnityToFigma.Editor.FigmaApi
     
     public static class FigmaApiUtils
     {
+        // Figma's edge sometimes terminates large HTTP/2 responses with INTERNAL_ERROR (Curl error 92). The plugin
+        // requests entire files with ?geometry=paths which can be very large, so wrap every UnityWebRequest in a
+        // retry loop that rebuilds the request on each attempt (UnityWebRequest cannot be reused after Send).
+        static readonly string[] TransientErrorHints =
+        {
+            "INTERNAL_ERROR",
+            "HTTP/2",
+            "stream ",
+            "Curl error 92",
+            "Curl error 56",
+            "Curl error 18",
+            "Curl error 28",
+            "Curl error 6",
+            "Curl error 7",
+            "Connection refused",
+            "Connection reset",
+            "timed out",
+            "timeout",
+        };
+
+        static bool IsTransientFailure(UnityWebRequest req)
+        {
+            var code = req.responseCode;
+            if (code == 0 || code == 408 || code == 429 || (code >= 500 && code < 600)) return true;
+            var err = req.error ?? string.Empty;
+            for (int i = 0; i < TransientErrorHints.Length; i++)
+            {
+                if (err.IndexOf(TransientErrorHints[i], StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Send a UnityWebRequest GET with retry/backoff for transient HTTP/2 / network failures.
+        /// Returns the final UnityWebRequest (success or terminal failure). Caller owns disposal.
+        /// </summary>
+        public static async Task<UnityWebRequest> SendGetWithRetryAsync(string url, string figmaAccessToken,
+            int timeoutSeconds = 180, int maxAttempts = 4)
+        {
+            UnityWebRequest webRequest = null;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                webRequest?.Dispose();
+                webRequest = UnityWebRequest.Get(url);
+                if (!string.IsNullOrEmpty(figmaAccessToken))
+                    webRequest.SetRequestHeader("X-Figma-Token", figmaAccessToken);
+                webRequest.timeout = timeoutSeconds;
+
+                try { await webRequest.SendWebRequest(); }
+                catch { /* inspect result below */ }
+
+                if (webRequest.result == UnityWebRequest.Result.Success) return webRequest;
+                if (!IsTransientFailure(webRequest) || attempt == maxAttempts) return webRequest;
+
+                var delayMs = (int)Math.Min(8000, 500 * Math.Pow(2, attempt - 1));
+                Debug.LogWarning(
+                    $"[FigmaToUnity] Transient failure (attempt {attempt}/{maxAttempts}) for {url}. " +
+                    $"Retrying in {delayMs}ms. HTTP {webRequest.responseCode} {webRequest.error}");
+                await Task.Delay(delayMs);
+            }
+            return webRequest;
+        }
+
         static string FormatWebRequestFailure(UnityWebRequest webRequest, string requestLabel)
         {
             var code = webRequest.responseCode;
@@ -106,10 +169,7 @@ namespace UnityToFigma.Editor.FigmaApi
                 $"https://api.figma.com/v1/files/{fileId}?geometry=paths"; // We need geometry=paths to get rotation and full transform
 
             FigmaFile figmaFile = null;
-            // Download the Figma Document
-            var webRequest = UnityWebRequest.Get(url);
-            webRequest.SetRequestHeader("X-Figma-Token", accessToken);
-            await webRequest.SendWebRequest();
+            var webRequest = await SendGetWithRetryAsync(url, accessToken);
 
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
@@ -163,10 +223,7 @@ namespace UnityToFigma.Editor.FigmaApi
             // Execute server-side rendering. Sending this webRequest will return a list of all images to download
             var serverRenderUrl =
                 $"https://api.figma.com/v1/images/{fileId}?ids={serverNodeCsvList}&scale={serverRenderImageScale}&use_absolute_bounds=true";
-            var webRequest = UnityWebRequest.Get(serverRenderUrl);
-            webRequest.SetRequestHeader("X-Figma-Token", accessToken);
-
-            await webRequest.SendWebRequest();
+            var webRequest = await SendGetWithRetryAsync(serverRenderUrl, accessToken);
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
                 throw new Exception(
@@ -199,10 +256,7 @@ namespace UnityToFigma.Editor.FigmaApi
             // Download a list all the image fills container in the Figma document
             var imageFillUrl = $"https://api.figma.com/v1/files/{fileId}/images";
 
-            var webRequest = UnityWebRequest.Get(imageFillUrl);
-            webRequest.SetRequestHeader("X-Figma-Token", accessToken);
-
-            await webRequest.SendWebRequest();
+            var webRequest = await SendGetWithRetryAsync(imageFillUrl, accessToken);
 
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
@@ -234,11 +288,8 @@ namespace UnityToFigma.Editor.FigmaApi
             FigmaFileNodes fileNodes;
             var externalComponentsJoined = string.Join(",",nodeIds);
             var componentsUrl = $"https://api.figma.com/v1/files/{fileId}/nodes/?ids={externalComponentsJoined}";
-            
-            // Download the FIGMA Document
-            var webRequest = UnityWebRequest.Get(componentsUrl);
-            webRequest.SetRequestHeader("X-Figma-Token",accessToken);
-            await webRequest.SendWebRequest();
+
+            var webRequest = await SendGetWithRetryAsync(componentsUrl, accessToken);
 
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
@@ -337,9 +388,8 @@ namespace UnityToFigma.Editor.FigmaApi
                 EditorUtility.DisplayProgressBar("Importing Figma Document", $"Downloading Server Image {downloadIndex}/{downloadCount}", (float)downloadIndex/(float) downloadCount);
                 try
                 {
-                    // Download and write the image data
-                    var imageDownloadWebRequest = UnityWebRequest.Get(downloadItem.Url);
-                    await imageDownloadWebRequest.SendWebRequest();
+                    // Download and write the image data (retry on transient HTTP/2 failures)
+                    var imageDownloadWebRequest = await SendGetWithRetryAsync(downloadItem.Url, null);
 
                     if (imageDownloadWebRequest.result != UnityWebRequest.Result.Success)
                     {
