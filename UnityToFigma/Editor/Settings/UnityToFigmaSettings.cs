@@ -26,8 +26,8 @@ namespace UnityToFigma.Editor.Settings
         [Tooltip("C# Namespace filter for binding MonoBehaviours for screens. Use this to ensure it will only bind to MonoBehaviours in that namespace (eg specify 'MyGame.UI' to only bind MyGame.UI.PlayScreen node to 'PlayScreen')")]
         public string ScreenBindingNamespace="";
         
-        [Tooltip("Scale for rendering server images")]
-        public int ServerRenderImageScale=3;
+        [Tooltip("Scale for rendering server images. Higher = sharper but heavier figma render cost (raises 'Render timeout' risk for large batches). 2 is a safer default; raise to 3 only when needed.")]
+        public int ServerRenderImageScale = 2;
 
         [Tooltip("Tick this to enable downloading missing fonts from Google Fonts")]
         public bool EnableGoogleFontsDownloads = true;

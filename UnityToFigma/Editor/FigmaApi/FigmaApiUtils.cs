@@ -575,6 +575,101 @@ namespace UnityToFigma.Editor.FigmaApi
         }
 
         /// <summary>
+        /// Batched server render with adaptive split on figma's HTTP 400 "Render timeout" response.
+        /// figma's /v1/images endpoint imposes a server-side render time limit; complex/scaled batches
+        /// that exceed it return 400 with body {"err":"Render timeout, try requesting fewer or smaller images"}.
+        /// This helper:
+        ///   - dedupes node ids
+        ///   - starts with `initialBatchSize` per request
+        ///   - on "Render timeout" splits the failing batch in half and re-enqueues
+        ///   - if a single-node batch still times out, logs a warning and skips that node so the
+        ///     overall import keeps progressing.
+        /// </summary>
+        public static async Task<List<FigmaServerRenderData>> GetFigmaServerRenderDataBatched(
+            string fileId, string accessToken, IList<string> nodeIds, int serverRenderImageScale,
+            int initialBatchSize,
+            Action<int, int> onProgress = null)
+        {
+            var results = new List<FigmaServerRenderData>();
+            if (nodeIds == null || nodeIds.Count == 0) return results;
+
+            // Dedupe while preserving order.
+            var deduped = new List<string>(nodeIds.Count);
+            var seen = new HashSet<string>();
+            foreach (var id in nodeIds)
+            {
+                if (string.IsNullOrEmpty(id) || !seen.Add(id)) continue;
+                deduped.Add(id);
+            }
+
+            if (initialBatchSize <= 0) initialBatchSize = 25;
+
+            var queue = new Queue<List<string>>();
+            for (int i = 0; i < deduped.Count; i += initialBatchSize)
+            {
+                var size = Math.Min(initialBatchSize, deduped.Count - i);
+                queue.Enqueue(deduped.GetRange(i, size));
+            }
+
+            int totalSubmitted = 0;
+            int totalAccounted = 0;
+            while (queue.Count > 0)
+            {
+                var batch = queue.Dequeue();
+                totalSubmitted++;
+                onProgress?.Invoke(totalAccounted, deduped.Count);
+
+                var csv = string.Join(",", batch);
+                var url = $"https://api.figma.com/v1/images/{fileId}?ids={Uri.EscapeDataString(csv)}&scale={serverRenderImageScale}&use_absolute_bounds=true";
+                var req = await SendGetWithRetryAsync(url, accessToken);
+                if (req.result == UnityWebRequest.Result.Success)
+                {
+                    try
+                    {
+                        var data = JsonConvert.DeserializeObject<FigmaServerRenderData>(
+                            req.downloadHandler.text, CreateFigmaJsonSettings());
+                        if (data != null) results.Add(data);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[FigmaToUnity] Failed to decode server render batch ({batch.Count} ids): {e.Message}");
+                    }
+                    totalAccounted += batch.Count;
+                    continue;
+                }
+
+                var body = req.downloadHandler?.text ?? string.Empty;
+                bool isRenderTimeout = req.responseCode == 400 &&
+                    body.IndexOf("Render timeout", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (isRenderTimeout && batch.Count > 1)
+                {
+                    int half = batch.Count / 2;
+                    var left = batch.GetRange(0, half);
+                    var right = batch.GetRange(half, batch.Count - half);
+                    queue.Enqueue(left);
+                    queue.Enqueue(right);
+                    Debug.LogWarning(
+                        $"[FigmaToUnity] figma server render timeout for {batch.Count} ids — splitting into {left.Count}+{right.Count}.");
+                    continue;
+                }
+                if (isRenderTimeout && batch.Count == 1)
+                {
+                    Debug.LogWarning(
+                        $"[FigmaToUnity] figma server render timeout for single node '{batch[0]}'. Skipping (node likely too complex at scale {serverRenderImageScale}).");
+                    totalAccounted += 1;
+                    continue;
+                }
+
+                throw new Exception(
+                    $"{FormatWebRequestFailure(req, "Figma server render API")} url={url}");
+            }
+
+            onProgress?.Invoke(deduped.Count, deduped.Count);
+            return results;
+        }
+
+        /// <summary>
         /// Downloads image fill data for a Figma document
         /// </summary>
         /// <param name="fileId">Figma File Id</param>
