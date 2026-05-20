@@ -100,6 +100,8 @@ namespace UnityToFigma.Editor
                     s_UnityToFigmaSettings.FileId, enabledPageIdList);
                 if (figmaFile == null) return;
 
+                // Trim each page's direct children to the user-picked frames if any node selection exists.
+                ApplyNodeSelectionFilter(figmaFile, s_UnityToFigmaSettings.NodeSelections);
                 pageNodeList = FigmaDataUtils.GetPageNodes(figmaFile);
             }
             else
@@ -110,6 +112,24 @@ namespace UnityToFigma.Editor
             }
 
             await ImportDocument(s_UnityToFigmaSettings.FileId, figmaFile, pageNodeList);
+        }
+
+        /// <summary>
+        /// Trim each page's direct children based on FigmaImportPicker selection. Pages with no
+        /// matching FigmaNodeSelection entry (or empty selection list) are left as-is.
+        /// </summary>
+        static void ApplyNodeSelectionFilter(FigmaFile file, List<FigmaNodeSelection> selections)
+        {
+            if (file?.document?.children == null || selections == null || selections.Count == 0) return;
+            foreach (var pageNode in file.document.children)
+            {
+                if (pageNode == null || pageNode.type != "CANVAS") continue;
+                var sel = selections.FirstOrDefault(s => s.PageNodeId == pageNode.id);
+                if (sel == null || sel.SelectedNodeIds == null || sel.SelectedNodeIds.Count == 0) continue;
+                if (pageNode.children == null) continue;
+                var allow = new HashSet<string>(sel.SelectedNodeIds);
+                pageNode.children = pageNode.children.Where(c => c != null && allow.Contains(c.id)).ToList();
+            }
         }
 
         /// <summary>
