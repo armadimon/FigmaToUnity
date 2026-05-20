@@ -74,7 +74,7 @@ namespace UnityToFigma.Editor.FigmaApi
         /// Returns the final UnityWebRequest (success or terminal failure). Caller owns disposal.
         /// </summary>
         public static async Task<UnityWebRequest> SendGetWithRetryAsync(string url, string figmaAccessToken,
-            int timeoutSeconds = 180, int maxAttempts = 4)
+            int timeoutSeconds = 180, int maxAttempts = 5)
         {
             UnityWebRequest webRequest = null;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -91,13 +91,36 @@ namespace UnityToFigma.Editor.FigmaApi
                 if (webRequest.result == UnityWebRequest.Result.Success) return webRequest;
                 if (!IsTransientFailure(webRequest) || attempt == maxAttempts) return webRequest;
 
-                var delayMs = (int)Math.Min(8000, 500 * Math.Pow(2, attempt - 1));
+                int delayMs = ComputeRetryDelayMs(webRequest, attempt);
                 Debug.LogWarning(
                     $"[FigmaToUnity] Transient failure (attempt {attempt}/{maxAttempts}) for {url}. " +
                     $"Retrying in {delayMs}ms. HTTP {webRequest.responseCode} {webRequest.error}");
                 await Task.Delay(delayMs);
             }
             return webRequest;
+        }
+
+        // Honor server-supplied Retry-After when present; otherwise use a long backoff for rate-limit codes
+        // (figma's file API rate-limits aggressively on large docs) and a shorter one for network/HTTP/2 aborts.
+        static int ComputeRetryDelayMs(UnityWebRequest req, int attempt)
+        {
+            var retryAfter = req.GetResponseHeader("Retry-After");
+            if (!string.IsNullOrEmpty(retryAfter))
+            {
+                if (int.TryParse(retryAfter, out var secs)) return Math.Max(1000, secs * 1000);
+                if (DateTime.TryParse(retryAfter, out var when))
+                {
+                    var delta = (when.ToUniversalTime() - DateTime.UtcNow).TotalMilliseconds;
+                    if (delta > 0) return (int)Math.Min(180000, delta);
+                }
+            }
+            if (req.responseCode == 429 || req.responseCode == 503)
+            {
+                // 15s, 30s, 60s, 120s
+                return (int)Math.Min(120000, 15000 * Math.Pow(2, attempt - 1));
+            }
+            // network / HTTP/2 transient: 2s, 4s, 8s, 16s
+            return (int)Math.Min(30000, 2000 * Math.Pow(2, attempt - 1));
         }
 
         static string FormatWebRequestFailure(UnityWebRequest webRequest, string requestLabel)
