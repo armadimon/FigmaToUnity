@@ -10,17 +10,16 @@
 
 ```
 [1] UnityToFigma > Sync Document  → {ImportRoot}/Screens/, Components/, Textures/, Fonts/
-[2] AssetPostprocessor (자동)      → 스프라이트 maxSize/FullRect 강제, 9-slice border 는 AI 패스에서 갱신
-[3] Postprocess Sync Options 창 (자동 표시)
+[2] Postprocess Sync Options 창 (자동 표시)
     └ "AI 컨벤션 후처리 컨텍스트 생성 + 클립보드 복사" Apply
-[4] AI 컨벤션 후처리 (Claude 호출)
+[3] AI 컨벤션 후처리 (Claude 호출)
     ├ Figma file JSON + 임포트된 프리팹 구조 + (필요시) Figma MCP 스크린샷 비교
     ├ 노드 역할 추론 (Button/Text/Image/ScrollArea/ListItem/Background)
     ├ 프로젝트 컨벤션명 재명명
     ├ MonoBehaviour 부착 + [SerializeField] 자동 매핑
     ├ 9-slice border 확정 (스프라이트 측에 반영)
     └ LayoutGroup 부착 여부 결정
-[5] ugui-from-screenshot 보정 (Claude 호출, unity-mcp)
+[4] ugui-from-screenshot 보정 (Claude 호출, unity-mcp)
     ├ Apply Responsive Layout / Auto Anchor (anchor 디자인 의도 추론)
     ├ Setup TMP Korean Fallback (Dynamic SDF)
     ├ Capture Default Screen (디자인 사이즈 정확 캡처)
@@ -102,18 +101,16 @@
 4. **발견된 폰트 패밀리** 목록
 5. **(선택) Figma MCP 스크린샷**: 시각 검증·역할 추론 보조에만 사용 (비용 큼)
 
-## 4. 스프라이트 후처리 (자동, AssetPostprocessor)
+## 4. 스프라이트 후처리
 
-`{ImportRoot}/Textures/` 에 들어오는 신규/갱신 스프라이트에 자동 적용. **이름 토큰에 의존하지 않는다.**
+`{ImportRoot}/Textures/` 의 텍스처 임포트 설정 (`spriteImportMode`, `spriteMeshType`, `maxTextureSize`) 은 **FigmaToUnity 패키지의 기본 임포트 동작 또는 사용자 설정에 맡긴다**. AssetPostprocessor 로 일괄 강제하면 기존 텍스처가 모두 재임포트되는 부작용이 있어 본 도구는 그 패스를 두지 않는다.
 
-| 항목 | 규칙 |
-|------|------|
-| `spriteImportMode` | `Single` |
-| `spriteMeshType` | `FullRect` |
-| `maxTextureSize` | 원본 픽셀 크기 이상 가장 작은 2의 거듭제곱 (32~2048) |
-| `spriteBorder` | **초기값은 0**. AI 분석 패스에서 9-slice 로 판정되면 그때 갱신 |
+| 항목 | 처리 주체 |
+|------|----------|
+| `spriteImportMode` / `spriteMeshType` / `maxTextureSize` | FigmaToUnity 임포트 시점 / 사용자 수동 |
+| `spriteBorder` (9-slice) | **AI 후처리 패스에서 Figma 메타 + 이미지로 판정해 적용** |
 
-> 9-slice 자동 감지를 AssetPostprocessor 에서 시도하지 않음 (오탐 위험). AI 후처리 시점에 Figma 메타 + 이미지로 판단해 적용.
+> 9-slice 자동 감지는 오탐 위험이 크므로 AI 후처리 시점에 Figma 메타 + 이미지로 판단해 적용한다.
 
 ## 5. 폰트 처리 (자동 다운로드 + 실패 시 GUI 직접 선택)
 
@@ -162,7 +159,7 @@
 
 > **위임된 항목** (RT anchor 보정, 한글 fallback, 다해상도 검증) 은 이 창에서 직접 실행하지 않고, AI 컨텍스트 안내를 보고 Claude 가 ugui-from-screenshot 스킬을 통해 처리한다.
 
-**스프라이트 후처리** (Single + FullRect + maxSize=NextPOT) 는 `AssetPostprocessor` 로 항상 자동 적용 — 옵션 토글에 없음.
+**스프라이트 임포트 설정** (`spriteImportMode`, `spriteMeshType`, `maxTextureSize`) 은 FigmaToUnity 의 기본 임포트 또는 사용자 설정에 맡긴다 — 본 도구는 별도 AssetPostprocessor 를 두지 않는다 (기존 텍스처 일괄 재임포트 부작용 방지).
 
 ### 메뉴 일람
 
@@ -173,7 +170,6 @@
 
 코드 위치: `FigmaToUnity/UnityToFigma/Editor/Postprocess/`
 - `FigmaPostprocessPaths.cs` — 활성 Settings 의 ImportRoot 동적 참조 헬퍼
-- `FigmaSpritePostprocessor.cs` — 스프라이트 자동 후처리 (`AssetPostprocessor`)
 - `FigmaSyncWatcher.cs` — Sync 종료 감지 + Sync Options 창 자동 호출
 - `FigmaPostSyncWindow.cs` — Sync Options 통합 창 (AI 컨텍스트 + 위임 안내)
 - `FigmaSyncOptions.cs` — EditorPrefs 기반 옵션 저장소

@@ -46,7 +46,6 @@ namespace UnityToFigma.Editor.Postprocess
             EditorGUILayout.LabelField("실행할 후처리", EditorStyles.miniBoldLabel);
             using (new EditorGUI.IndentLevelScope())
             {
-                EditorGUILayout.LabelField("Sprite Postprocess", "AssetPostprocessor가 자동 적용 (Single + FullRect + maxSize)");
                 FigmaSyncOptions.RunAiContextGen = EditorGUILayout.ToggleLeft(
                     "AI 컨벤션 후처리 컨텍스트 생성 + 클립보드 복사", FigmaSyncOptions.RunAiContextGen);
             }
