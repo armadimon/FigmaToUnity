@@ -54,6 +54,13 @@ namespace UnityToFigma.Editor.Settings
         [HideInInspector]
         public List<FigmaNodeSelection> NodeSelections = new ();
 
+        [Header("Component Attach")]
+        [Tooltip("When to attach LayoutElement to imported nodes. AutoLayoutOnly attaches only when the parent figma node uses HORIZONTAL/VERTICAL auto-layout (LayoutElement is dead weight under absolute layout). Always = legacy behavior. Never = never attach.")]
+        public LayoutElementAttachMode LayoutElementAttach = LayoutElementAttachMode.AutoLayoutOnly;
+
+        [Tooltip("Attach FigmaImage component on rectangle/ellipse/star/component/instance/section nodes that have fills or strokes. Disable when you don't need to preserve figma fill/stroke metadata at runtime (e.g. static UI bake without prototype flow).")]
+        public bool AttachFigmaImage = true;
+
         [Header("Text Rendering")]
         [Tooltip("How to render Figma text outlines (stroke). ShaderUnderlay creates a TMP material variant using the Figma TMP shader's outline keyword. Disabled drops Figma stroke information for text so each project can apply its own outline solution.")]
         public TextOutlineMode TextOutline = TextOutlineMode.ShaderUnderlay;
@@ -146,6 +153,16 @@ namespace UnityToFigma.Editor.Settings
     {
         ShaderUnderlay = 0,
         Disabled = 1,
+    }
+
+    public enum LayoutElementAttachMode
+    {
+        /// <summary>Only attach LayoutElement when the parent figma node uses HORIZONTAL/VERTICAL auto-layout.</summary>
+        AutoLayoutOnly = 0,
+        /// <summary>Attach LayoutElement on every imported node (legacy behavior).</summary>
+        Always = 1,
+        /// <summary>Never attach LayoutElement.</summary>
+        Never = 2,
     }
 
     [Serializable]
