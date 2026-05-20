@@ -73,9 +73,16 @@ namespace UnityToFigma.Editor.FigmaApi
         /// Send a UnityWebRequest GET with retry/backoff for transient HTTP/2 / network failures.
         /// Returns the final UnityWebRequest (success or terminal failure). Caller owns disposal.
         /// </summary>
+        // Aligns with figma's official guidance: honor Retry-After exactly, cap retries low, and surface the
+        // diagnostic headers (Plan-Tier / Rate-Limit-Type / Upgrade-Link) so the user can tell apart a
+        // transient HTTP/2 abort vs a per-month plan quota hit. Self-invented exponential backoff is useless
+        // against the leaky-bucket budget (Starter PAT = 6 GET file / file / month).
         public static async Task<UnityWebRequest> SendGetWithRetryAsync(string url, string figmaAccessToken,
-            int timeoutSeconds = 180, int maxAttempts = 5)
+            int timeoutSeconds = 180, int maxAttempts = 3)
         {
+            const int FallbackRetryDelayMs = 5_000;
+            const int MaxRetryAfterCapMs = 60_000; // do not block the editor longer than 60s; surface the error and let user decide
+
             UnityWebRequest webRequest = null;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
@@ -89,38 +96,56 @@ namespace UnityToFigma.Editor.FigmaApi
                 catch { /* inspect result below */ }
 
                 if (webRequest.result == UnityWebRequest.Result.Success) return webRequest;
-                if (!IsTransientFailure(webRequest) || attempt == maxAttempts) return webRequest;
+                if (!IsTransientFailure(webRequest) || attempt == maxAttempts)
+                {
+                    LogRateLimitDiagnostics(webRequest, url);
+                    return webRequest;
+                }
 
-                int delayMs = ComputeRetryDelayMs(webRequest, attempt);
+                int delayMs = FallbackRetryDelayMs;
+                var retryAfter = webRequest.GetResponseHeader("Retry-After");
+                if (!string.IsNullOrEmpty(retryAfter))
+                {
+                    if (int.TryParse(retryAfter, out var secs))
+                        delayMs = Math.Max(1_000, secs * 1_000);
+                    else if (DateTime.TryParse(retryAfter, out var when))
+                    {
+                        var delta = (when.ToUniversalTime() - DateTime.UtcNow).TotalMilliseconds;
+                        if (delta > 0) delayMs = (int)delta;
+                    }
+                }
+
+                if (delayMs > MaxRetryAfterCapMs)
+                {
+                    Debug.LogError(
+                        $"[FigmaToUnity] Server asked to wait {delayMs / 1000}s (> {MaxRetryAfterCapMs / 1000}s cap). " +
+                        $"Aborting retry. Likely Starter plan monthly quota — try again next month or upgrade. URL={url}");
+                    LogRateLimitDiagnostics(webRequest, url);
+                    return webRequest;
+                }
+
                 Debug.LogWarning(
                     $"[FigmaToUnity] Transient failure (attempt {attempt}/{maxAttempts}) for {url}. " +
                     $"Retrying in {delayMs}ms. HTTP {webRequest.responseCode} {webRequest.error}");
+                LogRateLimitDiagnostics(webRequest, url);
                 await Task.Delay(delayMs);
             }
             return webRequest;
         }
 
-        // Honor server-supplied Retry-After when present; otherwise use a long backoff for rate-limit codes
-        // (figma's file API rate-limits aggressively on large docs) and a shorter one for network/HTTP/2 aborts.
-        static int ComputeRetryDelayMs(UnityWebRequest req, int attempt)
+        static void LogRateLimitDiagnostics(UnityWebRequest req, string url)
         {
+            if (req == null) return;
             var retryAfter = req.GetResponseHeader("Retry-After");
-            if (!string.IsNullOrEmpty(retryAfter))
-            {
-                if (int.TryParse(retryAfter, out var secs)) return Math.Max(1000, secs * 1000);
-                if (DateTime.TryParse(retryAfter, out var when))
-                {
-                    var delta = (when.ToUniversalTime() - DateTime.UtcNow).TotalMilliseconds;
-                    if (delta > 0) return (int)Math.Min(180000, delta);
-                }
-            }
-            if (req.responseCode == 429 || req.responseCode == 503)
-            {
-                // 15s, 30s, 60s, 120s
-                return (int)Math.Min(120000, 15000 * Math.Pow(2, attempt - 1));
-            }
-            // network / HTTP/2 transient: 2s, 4s, 8s, 16s
-            return (int)Math.Min(30000, 2000 * Math.Pow(2, attempt - 1));
+            var planTier = req.GetResponseHeader("X-Figma-Plan-Tier");
+            var rlType = req.GetResponseHeader("X-Figma-Rate-Limit-Type");
+            var upgrade = req.GetResponseHeader("X-Figma-Upgrade-Link");
+            if (string.IsNullOrEmpty(retryAfter) && string.IsNullOrEmpty(planTier) &&
+                string.IsNullOrEmpty(rlType) && string.IsNullOrEmpty(upgrade)) return;
+            Debug.Log(
+                $"[FigmaToUnity] figma headers — Retry-After={retryAfter ?? "-"}s, " +
+                $"X-Figma-Plan-Tier={planTier ?? "-"}, X-Figma-Rate-Limit-Type={rlType ?? "-"}, " +
+                $"X-Figma-Upgrade-Link={upgrade ?? "-"} (url={url})");
         }
 
         static string FormatWebRequestFailure(UnityWebRequest webRequest, string requestLabel)
