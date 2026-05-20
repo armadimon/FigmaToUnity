@@ -36,7 +36,13 @@ namespace UnityToFigma.Editor.Nodes
                     var needsImageComponent = node.fills.Length > 0 || node.strokes.Length > 0;
                     if (NodeIsSubstitution(node, figmaImportProcessData)) break;
                     if (!needsImageComponent) break;
-                    if (!figmaImportProcessData.Settings.AttachFigmaImage) break; // user opted out of FigmaImage metadata
+                    if (!figmaImportProcessData.Settings.AttachFigmaImage)
+                    {
+                        // Fallback to standard Unity UI.Image: SOLID -> color, IMAGE -> sprite. SDF features
+                        // (round corner / stroke / gradient) are intentionally dropped per user request.
+                        ApplyUnityImageFallback(node, nodeGameObject, figmaImportProcessData);
+                        break;
+                    }
                     // Create as needed (in case an override has specified new properties)
                     var figmaImage = nodeGameObject.GetComponent<FigmaImage>();
                     if (figmaImage == null) figmaImage = nodeGameObject.AddComponent<FigmaImage>();
@@ -402,6 +408,69 @@ namespace UnityToFigma.Editor.Nodes
                 case NodeType.WASHI_TAPE:
                 default:
                     // Unimplemented type
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Lightweight alternative to FigmaImage when the user opts out of the SDF component.
+        /// Attaches a plain UnityEngine.UI.Image and applies the first visible fill:
+        ///   - SOLID  -> Image.color
+        ///   - IMAGE  -> Image.sprite (with scaleMode mapped to Image.Type / preserveAspect)
+        ///   - GRADIENT/EMOJI -> approximate color (no SDF gradient support without FigmaImage)
+        /// Stroke / round corner / multi-channel fills are intentionally dropped.
+        /// </summary>
+        private static void ApplyUnityImageFallback(Node node, GameObject nodeGameObject, FigmaImportProcessData figmaImportProcessData)
+        {
+            if (node.fills == null || node.fills.Length == 0) return;
+            var firstFill = node.fills[0];
+
+            var image = nodeGameObject.GetComponent<Image>();
+            if (image == null) image = nodeGameObject.AddComponent<Image>();
+
+            if (!firstFill.visible)
+            {
+                image.enabled = false;
+                return;
+            }
+
+            switch (firstFill.type)
+            {
+                case Paint.PaintType.SOLID:
+                    image.sprite = null;
+                    image.color = FigmaDataUtils.GetUnityFillColor(firstFill);
+                    break;
+                case Paint.PaintType.IMAGE:
+                {
+                    var paths = new FigmaImportPathResolver(figmaImportProcessData.Settings);
+                    var sprite = AssetDatabase.LoadAssetAtPath<Sprite>(paths.GetPathForImageFill(firstFill.imageRef));
+                    image.sprite = sprite;
+                    image.color = new Color(1f, 1f, 1f, firstFill.opacity > 0 ? firstFill.opacity : 1f);
+                    switch (firstFill.scaleMode)
+                    {
+                        case Paint.ScaleMode.FIT:
+                            image.preserveAspect = true;
+                            image.type = Image.Type.Simple;
+                            break;
+                        case Paint.ScaleMode.FILL:
+                            image.preserveAspect = true;
+                            image.type = Image.Type.Simple;
+                            break;
+                        case Paint.ScaleMode.STRETCH:
+                            image.preserveAspect = false;
+                            image.type = Image.Type.Simple;
+                            break;
+                        case Paint.ScaleMode.TILE:
+                            image.preserveAspect = false;
+                            image.type = Image.Type.Tiled;
+                            break;
+                    }
+                    break;
+                }
+                default:
+                    // GRADIENT_*, EMOJI — best-effort color fallback (gradient flattens to average tint).
+                    image.sprite = null;
+                    image.color = FigmaDataUtils.GetUnityFillColor(firstFill);
                     break;
             }
         }
