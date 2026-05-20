@@ -9,6 +9,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityToFigma.Editor.Import;
+using UnityToFigma.Editor;
 
 namespace UnityToFigma.Editor.Fonts
 {
@@ -55,7 +56,13 @@ namespace UnityToFigma.Editor.Fonts
         {
             // If already loaded, ignore
             if (s_FontDefinitions != null) return;
-            var fontDataFile = AssetDatabase.LoadAssetAtPath("Packages/com.simonoliver.unitytofigma/UnityToFigma/Assets/google-fonts.json", typeof(TextAsset)) as TextAsset;
+            var fontDataFile = AssetDatabase.LoadAssetAtPath($"{UnityToFigmaImporter.PackageRoot}/UnityToFigma/Assets/google-fonts.json", typeof(TextAsset)) as TextAsset;
+            if (fontDataFile == null)
+            {
+                Debug.LogWarning($"[FigmaToUnity] google-fonts.json not found under {UnityToFigmaImporter.PackageRoot}/UnityToFigma/Assets/. Google Fonts auto-download will be disabled for this import.");
+                s_FontDefinitions = new Dictionary<string, GoogleFontDefinition>();
+                return;
+            }
             Debug.Log($"Font data loaded {fontDataFile.text.Length}");
             s_FontDefinitions = JsonConvert.DeserializeObject<Dictionary<string, GoogleFontDefinition>>(fontDataFile.text);
             Debug.Log($"Fonts found {s_FontDefinitions.Count}");

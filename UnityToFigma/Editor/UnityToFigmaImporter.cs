@@ -37,6 +37,12 @@ namespace UnityToFigma.Editor
         /// </summary>
         private const string FIGMA_PERSONAL_ACCESS_TOKEN_PREF_KEY = "FIGMA_PERSONAL_ACCESS_TOKEN";
 
+        /// <summary>
+        /// Root path of this package under Packages/. Used to load bundled assets via AssetDatabase.
+        /// Keep in sync with package.json "name".
+        /// </summary>
+        public const string PackageRoot = "Packages/com.armadimon.figmatounity";
+
         public const string PROGRESS_BOX_TITLE = "Importing Figma Document";
 
         /// <summary>
@@ -597,7 +603,7 @@ namespace UnityToFigma.Editor
                 if (screenController.TransitionEffect == null)
                 {
                     // Instantiate and apply the default transition effect (loaded from package assets folder)
-                    var defaultTransitionAnimationEffect = AssetDatabase.LoadAssetAtPath("Packages/com.simonoliver.unitytofigma/UnityToFigma/Assets/TransitionFadeToBlack.prefab", typeof(GameObject)) as GameObject;
+                    var defaultTransitionAnimationEffect = AssetDatabase.LoadAssetAtPath($"{PackageRoot}/UnityToFigma/Assets/TransitionFadeToBlack.prefab", typeof(GameObject)) as GameObject;
                     var transitionObject = (GameObject) PrefabUtility.InstantiatePrefab(defaultTransitionAnimationEffect,
                         screenController.transform.transform);
                     screenController.TransitionEffect =
