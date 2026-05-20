@@ -41,6 +41,19 @@ namespace UnityToFigma.Editor.Settings
         [Tooltip("If true, download only selected pages and screens")]
         public bool OnlyImportSelectedPages = false;
 
+        [Header("Caching")]
+        [Tooltip("Reuse cached figma file response when available. Avoids burning the per-month GET file quota on Starter plans. Disable or use 'Force Refetch' when the figma document changed.")]
+        public bool UseResponseCache = true;
+
+        [Tooltip("Ignore cache and force a fresh download on the next Sync.")]
+        public bool ForceRefetch = false;
+
+        [Tooltip("How long (in hours) a cached file response stays fresh before being refetched automatically. 0 = no expiry (cache lives until manually refreshed).")]
+        public int CacheTtlHours = 0;
+
+        [HideInInspector]
+        public List<FigmaNodeSelection> NodeSelections = new ();
+
         [Header("Import Paths & Policies")]
         [Tooltip("Root folder under Assets for generated import output (no trailing slash).")]
         public string ImportRoot = UnityToFigmaImportSettingsDefaults.ImportRoot;
@@ -141,5 +154,14 @@ namespace UnityToFigma.Editor.Settings
             Selected = true; // default is true
         }
     }
-    
+
+    /// <summary>
+    /// Per-page node selection persisted from the FigmaImportPicker GUI.
+    /// </summary>
+    [Serializable]
+    public class FigmaNodeSelection
+    {
+        public string PageNodeId;
+        public List<string> SelectedNodeIds = new();
+    }
 }

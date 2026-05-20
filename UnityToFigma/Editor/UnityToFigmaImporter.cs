@@ -256,6 +256,30 @@ namespace UnityToFigma.Editor
         {
             RequestPersonalAccessToken();
         }
+
+        [MenuItem("UnityToFigma/Clear Response Cache")]
+        static void ClearResponseCache()
+        {
+            var settings = UnityToFigmaSettingsProvider.FindSettingsAsset();
+            if (settings == null || string.IsNullOrEmpty(settings.FileId))
+            {
+                EditorUtility.DisplayDialog("UnityToFigma", "No settings or file id available.", "OK");
+                return;
+            }
+            FigmaApiUtils.InvalidateCachedFigmaDocument(settings.FileId);
+            Debug.Log($"[FigmaToUnity] Cleared response cache for file {settings.FileId}.");
+        }
+
+        [MenuItem("UnityToFigma/Force Refetch Next Sync")]
+        static void ForceRefetchNextSync()
+        {
+            var settings = UnityToFigmaSettingsProvider.FindSettingsAsset();
+            if (settings == null) return;
+            settings.ForceRefetch = true;
+            EditorUtility.SetDirty(settings);
+            AssetDatabase.SaveAssetIfDirty(settings);
+            Debug.Log("[FigmaToUnity] Next Sync will bypass cache and refetch from figma API.");
+        }
         
         /// <summary>
         /// Launch window to request personal access token
@@ -322,7 +346,24 @@ namespace UnityToFigma.Editor
                 var debugOutputPath = s_UnityToFigmaSettings == null
                     ? null
                     : new FigmaImportPathResolver(s_UnityToFigmaSettings).GetDocumentDebugJsonFilePath();
-                var figmaTask = FigmaApiUtils.GetFigmaDocument(fileId, s_PersonalAccessToken, debugOutputPath);
+
+                bool useCache = false;
+                int ttl = 0;
+                if (s_UnityToFigmaSettings != null)
+                {
+                    useCache = s_UnityToFigmaSettings.UseResponseCache && !s_UnityToFigmaSettings.ForceRefetch;
+                    ttl = s_UnityToFigmaSettings.CacheTtlHours;
+                    if (s_UnityToFigmaSettings.ForceRefetch)
+                    {
+                        FigmaApiUtils.InvalidateCachedFigmaDocument(fileId);
+                        // Consume the one-shot flag so subsequent Syncs go back to cache.
+                        s_UnityToFigmaSettings.ForceRefetch = false;
+                        EditorUtility.SetDirty(s_UnityToFigmaSettings);
+                        AssetDatabase.SaveAssetIfDirty(s_UnityToFigmaSettings);
+                    }
+                }
+
+                var figmaTask = FigmaApiUtils.GetFigmaDocument(fileId, s_PersonalAccessToken, debugOutputPath, useCache, ttl);
                 await figmaTask;
                 return figmaTask.Result;
             }

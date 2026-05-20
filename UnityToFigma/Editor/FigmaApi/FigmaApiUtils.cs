@@ -32,6 +32,70 @@ namespace UnityToFigma.Editor.FigmaApi
     
     public static class FigmaApiUtils
     {
+        // ------------------------------------------------------------------------------------------------
+        // Response cache (Library/UnityToFigma/cache/{fileId}.json)
+        // Saves the raw figma file API response so we don't burn the per-month GET file quota
+        // (Starter PAT = 6 / file / month) on every Sync.
+        // ------------------------------------------------------------------------------------------------
+        const string ResponseCacheRoot = "Library/UnityToFigma/cache";
+
+        static string ResponseCachePath(string fileId) => Path.Combine(ResponseCacheRoot, fileId + ".json");
+
+        public static bool TryReadCachedFigmaDocument(string fileId, int ttlHours, out string json, out DateTime writtenAt)
+        {
+            json = null;
+            writtenAt = default;
+            var path = ResponseCachePath(fileId);
+            if (!File.Exists(path)) return false;
+            writtenAt = File.GetLastWriteTimeUtc(path);
+            if (ttlHours > 0 && (DateTime.UtcNow - writtenAt).TotalHours > ttlHours) return false;
+            try
+            {
+                json = File.ReadAllText(path);
+                return !string.IsNullOrEmpty(json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[FigmaToUnity] Failed to read cache {path}: {e.Message}");
+                return false;
+            }
+        }
+
+        public static void WriteCachedFigmaDocument(string fileId, string json)
+        {
+            if (string.IsNullOrEmpty(fileId) || string.IsNullOrEmpty(json)) return;
+            try
+            {
+                if (!Directory.Exists(ResponseCacheRoot)) Directory.CreateDirectory(ResponseCacheRoot);
+                File.WriteAllText(ResponseCachePath(fileId), json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[FigmaToUnity] Failed to write cache for {fileId}: {e.Message}");
+            }
+        }
+
+        public static void InvalidateCachedFigmaDocument(string fileId)
+        {
+            var path = ResponseCachePath(fileId);
+            if (File.Exists(path))
+            {
+                try { File.Delete(path); }
+                catch (Exception e) { Debug.LogWarning($"[FigmaToUnity] Failed to delete cache {path}: {e.Message}"); }
+            }
+        }
+
+        public static FigmaFile DeserializeFigmaFile(string json)
+        {
+            var settings = new JsonSerializerSettings()
+            {
+                DefaultValueHandling = DefaultValueHandling.Include,
+                MissingMemberHandling = MissingMemberHandling.Ignore,
+                NullValueHandling = NullValueHandling.Ignore,
+            };
+            return JsonConvert.DeserializeObject<FigmaFile>(json, settings);
+        }
+
         // Figma's edge sometimes terminates large HTTP/2 responses with INTERNAL_ERROR (Curl error 92). The plugin
         // requests entire files with ?geometry=paths which can be very large, so wrap every UnityWebRequest in a
         // retry loop that rebuilds the request on each attempt (UnityWebRequest cannot be reused after Send).
@@ -247,8 +311,23 @@ namespace UnityToFigma.Editor.FigmaApi
         /// <param name="debugOutputPath">Optional Unity asset-relative path for writing downloaded JSON</param>
         /// <returns>The deserialized Figma file</returns>
         /// <exception cref="Exception"></exception>
-        public static async Task<FigmaFile> GetFigmaDocument(string fileId, string accessToken, string debugOutputPath = null)
+        public static async Task<FigmaFile> GetFigmaDocument(string fileId, string accessToken, string debugOutputPath = null,
+            bool useCache = false, int cacheTtlHours = 0)
         {
+            if (useCache && TryReadCachedFigmaDocument(fileId, cacheTtlHours, out var cachedJson, out var writtenAt))
+            {
+                try
+                {
+                    Debug.Log($"[FigmaToUnity] Using cached figma response for {fileId} (written {writtenAt:u})");
+                    return DeserializeFigmaFile(cachedJson);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[FigmaToUnity] Cache deserialize failed, refetching: {e.Message}");
+                    InvalidateCachedFigmaDocument(fileId);
+                }
+            }
+
             var url =
                 $"https://api.figma.com/v1/files/{fileId}?geometry=paths"; // We need geometry=paths to get rotation and full transform
 
@@ -260,6 +339,8 @@ namespace UnityToFigma.Editor.FigmaApi
                 throw new Exception(
                     $"{FormatWebRequestFailure(webRequest, "Figma file API")} url={url}. Check Personal Access Token (401/403) and file id.");
             }
+
+            WriteCachedFigmaDocument(fileId, webRequest.downloadHandler.text);
 
             try
             {
