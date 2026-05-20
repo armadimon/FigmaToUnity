@@ -1,0 +1,129 @@
+// 프로젝트에 복사: Assets/Editor/GameViewCapture.cs
+//
+// 배경: GameView 의 현재 RT 를 그대로 캡처하면 (Canvas 가 Overlay 모드라 일반 카메라
+// 캡처에는 안 잡힘 / ScaleWithScreenSize 라 Screen.width/height 와 referenceResolution
+// 의 비율이 안 맞음) 원하는 픽셀 크기로 검증 캡처를 받기 어렵다.
+//
+// 이 유틸리티는 캡처 직전에 Canvas 를 ScreenSpaceCamera + ConstantPixelSize(scale=1.0)
+// 로 임시 전환하여 임의 W x H 의 RenderTexture 로 정확히 렌더링한 뒤, 원복한다.
+//
+// UnityToFigma Bootstrap 메뉴 (Tools/UnityToFigma Bootstrap/Capture Default Screen) 가
+// 현재 Canvas 의 referenceResolution 을 사용해서 같은 동작을 자동으로 수행한다.
+// 이 파일은 디자인 사이즈를 직접 지정하고 싶을 때 쓰는 수동 백업이다.
+//
+// 사용 (unity-mcp Unity_RunCommand):
+//   internal class CommandScript : IRunCommand {
+//     public void Execute(ExecutionResult r) {
+//       var ok = UnityEditor.EditorApplication.ExecuteMenuItem(
+//           "Tools/UguiFromScreenshot/Capture Game View 1080x1920");
+//       r.Log("capture: {0}", ok);
+//     }
+//   }
+// (또는 1440x3040 변형)
+//
+// 출력 경로: Assets/_Temp/GameCapture_<W>x<H>.png
+
+using System.IO;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace UguiFromScreenshot.Editor
+{
+    public static class GameViewCapture
+    {
+        [MenuItem("Tools/UguiFromScreenshot/Capture Game View 1080x1920")]
+        public static void Capture1080x1920() => Capture(1080, 1920, "Assets/_Temp/GameCapture_1080x1920.png");
+
+        [MenuItem("Tools/UguiFromScreenshot/Capture Game View 1440x3040")]
+        public static void Capture1440x3040() => Capture(1440, 3040, "Assets/_Temp/GameCapture_1440x3040.png");
+
+        public static void Capture(int w, int h, string outputPath)
+        {
+            string dir = Path.GetDirectoryName(outputPath);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            var canvases = Object.FindObjectsByType<Canvas>(FindObjectsSortMode.None);
+            if (canvases.Length == 0)
+            {
+                Debug.LogWarning("[GameViewCapture] No canvas in scene");
+                return;
+            }
+
+            var origModes = new RenderMode[canvases.Length];
+            var origCams = new Camera[canvases.Length];
+            var origScaleMode = new CanvasScaler.ScaleMode[canvases.Length];
+            var origScaleFactor = new float[canvases.Length];
+            var origRefRes = new Vector2[canvases.Length];
+            var origMatch = new float[canvases.Length];
+            var scalers = new CanvasScaler[canvases.Length];
+
+            var camGo = new GameObject("__CaptureCam");
+            camGo.transform.position = new Vector3(0, 0, -100);
+            var cam = camGo.AddComponent<Camera>();
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0.94f, 0.96f, 0.98f, 1f);
+            cam.orthographic = true;
+            cam.orthographicSize = h / 2f;
+            cam.aspect = (float)w / h;
+            cam.nearClipPlane = 0.1f;
+            cam.farClipPlane = 500f;
+
+            var rt = new RenderTexture(w, h, 24);
+            rt.antiAliasing = 1;
+            cam.targetTexture = rt;
+
+            for (int i = 0; i < canvases.Length; i++)
+            {
+                origModes[i] = canvases[i].renderMode;
+                origCams[i] = canvases[i].worldCamera;
+                scalers[i] = canvases[i].GetComponent<CanvasScaler>();
+                if (scalers[i] != null)
+                {
+                    origScaleMode[i] = scalers[i].uiScaleMode;
+                    origScaleFactor[i] = scalers[i].scaleFactor;
+                    origRefRes[i] = scalers[i].referenceResolution;
+                    origMatch[i] = scalers[i].matchWidthOrHeight;
+
+                    scalers[i].uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+                    scalers[i].scaleFactor = 1f;
+                }
+                canvases[i].renderMode = RenderMode.ScreenSpaceCamera;
+                canvases[i].worldCamera = cam;
+                canvases[i].planeDistance = 10;
+            }
+
+            Canvas.ForceUpdateCanvases();
+            cam.Render();
+
+            var tex = new Texture2D(w, h, TextureFormat.ARGB32, false);
+            var prev = RenderTexture.active;
+            RenderTexture.active = rt;
+            tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            tex.Apply();
+            RenderTexture.active = prev;
+
+            // 원복 (try/finally가 아닌 이유: 예외 발생 시 디버깅 위해 상태 보존이 유용할 수 있음)
+            for (int i = 0; i < canvases.Length; i++)
+            {
+                canvases[i].renderMode = origModes[i];
+                canvases[i].worldCamera = origCams[i];
+                if (scalers[i] != null)
+                {
+                    scalers[i].uiScaleMode = origScaleMode[i];
+                    scalers[i].scaleFactor = origScaleFactor[i];
+                    scalers[i].referenceResolution = origRefRes[i];
+                    scalers[i].matchWidthOrHeight = origMatch[i];
+                }
+            }
+
+            Object.DestroyImmediate(camGo);
+            Object.DestroyImmediate(rt);
+
+            File.WriteAllBytes(outputPath, tex.EncodeToPNG());
+            Object.DestroyImmediate(tex);
+            AssetDatabase.Refresh();
+            Debug.Log($"[GameViewCapture] Saved {w}x{h} to {outputPath}");
+        }
+    }
+}
