@@ -184,6 +184,37 @@ namespace UnityToFigma.Editor.FigmaApi
         }
 
         /// <summary>
+        /// Lightweight fetch that only returns the document + canvas (page) nodes without frame children.
+        /// Use this for UI flows that just need the page list (e.g. page-selection picker) so we avoid
+        /// pulling the whole file with ?geometry=paths, which triggers HTTP/2 stream aborts and 429s on
+        /// large documents.
+        /// </summary>
+        public static async Task<FigmaFile> GetFigmaDocumentPagesLite(string fileId, string accessToken)
+        {
+            var url = $"https://api.figma.com/v1/files/{fileId}?depth=1";
+            var webRequest = await SendGetWithRetryAsync(url, accessToken);
+            if (webRequest.result != UnityWebRequest.Result.Success)
+            {
+                throw new Exception(
+                    $"{FormatWebRequestFailure(webRequest, "Figma file (pages-lite) API")} url={url}.");
+            }
+            try
+            {
+                var settings = new JsonSerializerSettings()
+                {
+                    DefaultValueHandling = DefaultValueHandling.Include,
+                    MissingMemberHandling = MissingMemberHandling.Ignore,
+                    NullValueHandling = NullValueHandling.Ignore,
+                };
+                return JsonConvert.DeserializeObject<FigmaFile>(webRequest.downloadHandler.text, settings);
+            }
+            catch (Exception e)
+            {
+                throw new Exception($"Problem decoding Figma pages-lite JSON {e.ToString()}");
+            }
+        }
+
+        /// <summary>
         /// Download a Figma doc from server and deserialize
         /// </summary>
         /// <param name="fileId">Figma File Id</param>

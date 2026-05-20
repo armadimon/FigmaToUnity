@@ -49,6 +49,17 @@ namespace UnityToFigma.Editor
         /// Cached personal access token, retrieved from PlayerPrefs
         /// </summary>
         private static string s_PersonalAccessToken;
+
+        /// <summary>
+        /// Returns the cached PAT, or refetches from PlayerPrefs when unset. For helpers that need to call
+        /// figma API without going through the full Sync requirements check (e.g. page-list refresh).
+        /// </summary>
+        public static string GetPersonalAccessToken()
+        {
+            if (string.IsNullOrEmpty(s_PersonalAccessToken))
+                s_PersonalAccessToken = PlayerPrefs.GetString(FIGMA_PERSONAL_ACCESS_TOKEN_PREF_KEY);
+            return s_PersonalAccessToken;
+        }
         
         /// <summary>
         /// Active canvas used for construction

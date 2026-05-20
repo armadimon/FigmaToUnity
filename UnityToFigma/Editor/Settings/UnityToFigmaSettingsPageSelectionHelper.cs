@@ -1,6 +1,8 @@
+using System;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityToFigma.Editor.FigmaApi;
 
 namespace UnityToFigma.Editor.Settings
 {
@@ -49,7 +51,21 @@ namespace UnityToFigma.Editor.Settings
             if (!UnityToFigmaImporter.CheckDocumentDownloadRequirements(settings))
                 return;
 
-            var figmaFile = await UnityToFigmaImporter.DownloadFigmaDocument(settings.FileId);
+            // Use the lightweight (?depth=1) endpoint so picking pages doesn't pull the entire document
+            // (which causes HTTP/2 stream aborts and 429s on large files).
+            FigmaFile figmaFile;
+            try
+            {
+                figmaFile = await FigmaApiUtils.GetFigmaDocumentPagesLite(
+                    settings.FileId,
+                    UnityToFigmaImporter.GetPersonalAccessToken());
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[FigmaToUnity] Failed to refresh page list: " + e.Message);
+                return;
+            }
+
             if (figmaFile == null)
                 return;
 
