@@ -362,7 +362,7 @@ namespace UnityToFigma.Editor.FigmaApi
                 else
                     Debug.LogWarning($"[FigmaToUnity] Selected page id '{pageId}' missing in nodes response.");
             }
-            liteFile.document.children = pageChildren;
+            liteFile.document.children = pageChildren.ToArray();
 
             // Merge components/styles from each page's mini-file (figma returns them per-node entry).
             var mergedComponents = new Dictionary<string, Component>();

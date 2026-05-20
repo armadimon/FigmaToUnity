@@ -123,12 +123,12 @@ namespace UnityToFigma.Editor
             if (file?.document?.children == null || selections == null || selections.Count == 0) return;
             foreach (var pageNode in file.document.children)
             {
-                if (pageNode == null || pageNode.type != "CANVAS") continue;
+                if (pageNode == null || pageNode.type != NodeType.CANVAS) continue;
                 var sel = selections.FirstOrDefault(s => s.PageNodeId == pageNode.id);
                 if (sel == null || sel.SelectedNodeIds == null || sel.SelectedNodeIds.Count == 0) continue;
                 if (pageNode.children == null) continue;
                 var allow = new HashSet<string>(sel.SelectedNodeIds);
-                pageNode.children = pageNode.children.Where(c => c != null && allow.Contains(c.id)).ToList();
+                pageNode.children = pageNode.children.Where(c => c != null && allow.Contains(c.id)).ToArray();
             }
         }
 

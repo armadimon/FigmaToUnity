@@ -49,7 +49,7 @@ namespace UnityToFigma.Editor.UI
         {
             public string Id;
             public string Name;
-            public string Type;
+            public NodeType Type;
             public bool Selected;
             public bool Expanded;
             public List<NodeRow> Children = new();
@@ -173,7 +173,7 @@ namespace UnityToFigma.Editor.UI
                 {
                     foreach (var c in file.document.children)
                     {
-                        if (c == null || c.type != "CANVAS") continue;
+                        if (c == null || c.type != NodeType.CANVAS) continue;
                         var prev = m_Settings.PageDataList.FirstOrDefault(p => p.NodeId == c.id);
                         m_PageRows[c.id] = new PageRow
                         {
