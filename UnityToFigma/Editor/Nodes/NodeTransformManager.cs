@@ -53,8 +53,17 @@ namespace UnityToFigma.Editor.Nodes
             layoutElement.preferredWidth = figmaNode.size.x;
             layoutElement.preferredHeight = figmaNode.size.y;
 
-            layoutElement.minHeight = figmaNode.absoluteBoundingBox.height;
-            layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
+            // SECTION / COMPONENT_SET / empty containers can ship without absoluteBoundingBox — fall back to size.
+            if (figmaNode.absoluteBoundingBox != null)
+            {
+                layoutElement.minHeight = figmaNode.absoluteBoundingBox.height;
+                layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
+            }
+            else
+            {
+                layoutElement.minHeight = figmaNode.size.y;
+                layoutElement.minWidth = figmaNode.size.x;
+            }
 
             // Apply constraints
             // Groups in Figma dont have their own constraints, so to setup effectively, we need to use the first child's constraints
@@ -138,7 +147,19 @@ namespace UnityToFigma.Editor.Nodes
             // Default to top left alignment
             targetRectTransform.anchorMin = targetRectTransform.anchorMax = new Vector2(0, 1);
             targetRectTransform.pivot = new Vector2(0, 1);
-            
+
+            // figma omits absoluteBoundingBox for SECTION / COMPONENT_SET / empty containers — skip absolute layout
+            // and zero the rect so the import keeps progressing instead of NRE-aborting the whole document.
+            if (figmaNode?.absoluteBoundingBox == null)
+            {
+                Debug.LogWarning(
+                    $"[FigmaToUnity] Node '{figmaNode?.name}' ({figmaNode?.id}, type={figmaNode?.type}) has no absoluteBoundingBox — using zero size/position.");
+                targetRectTransform.sizeDelta = Vector2.zero;
+                targetRectTransform.anchoredPosition = Vector2.zero;
+                UnityUiUtils.GetOrAddComponent<LayoutElement>(targetRectTransform.gameObject);
+                return;
+            }
+
             // We'll use absolute bounding box size
             targetRectTransform.sizeDelta = new Vector2(figmaNode.absoluteBoundingBox.width, figmaNode.absoluteBoundingBox.height);
 
@@ -151,7 +172,7 @@ namespace UnityToFigma.Editor.Nodes
             layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
 
             // Position will be relative to parent absoluteBoundingBox (if it exists). Pages have no absoluteBoundingBox so assume pos of 0,0
-            var figmaParentNodePosition = figmaParentNode.absoluteBoundingBox != null
+            var figmaParentNodePosition = (figmaParentNode != null && figmaParentNode.absoluteBoundingBox != null)
                 ? new Vector2(figmaParentNode.absoluteBoundingBox.x, figmaParentNode.absoluteBoundingBox.y)
                 : Vector2.zero;
 
@@ -217,21 +238,24 @@ namespace UnityToFigma.Editor.Nodes
         /// <returns></returns>
         public static Rect GetRelativeBoundsForAllChildNodes(Node figmaNode)
         {
-            if (figmaNode.children == null) return new Rect();
+            if (figmaNode?.children == null || figmaNode.absoluteBoundingBox == null) return new Rect();
             var mergedRect = new Rect();
+            bool initialized = false;
             for (var i = 0; i < figmaNode.children.Length; i++)
             {
                 var childNode = figmaNode.children[i];
+                if (childNode?.absoluteBoundingBox == null) continue;
                 var relativePosition = new Vector2(childNode.absoluteBoundingBox.x - figmaNode.absoluteBoundingBox.x,
                     childNode.absoluteBoundingBox.y - figmaNode.absoluteBoundingBox.y);
                 var size = new Vector2(childNode.absoluteBoundingBox.width, childNode.absoluteBoundingBox.height);
-                
-                if (i == 0)
+
+                if (!initialized)
                 {
                     mergedRect.xMin = relativePosition.x;
                     mergedRect.xMax = relativePosition.x+size.x;
                     mergedRect.yMin = relativePosition.y;
                     mergedRect.yMax = relativePosition.y+size.y;
+                    initialized = true;
                 }
                 else
                 {
