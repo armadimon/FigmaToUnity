@@ -448,6 +448,8 @@ namespace UnityToFigma.Editor
 
         private static async Task ImportDocument(string fileId, FigmaFile figmaFile, List<Node> downloadPageNodeList)
         {
+            // Propagate component-attach policy to transform helpers for this import run.
+            Nodes.NodeTransformManager.LayoutElementAttachMode = s_UnityToFigmaSettings.LayoutElementAttach;
 
             // Build a list of page IDs to download
             var downloadPageIdList = downloadPageNodeList.Select(p => p.id).ToList();

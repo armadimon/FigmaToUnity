@@ -36,6 +36,7 @@ namespace UnityToFigma.Editor.Nodes
                     var needsImageComponent = node.fills.Length > 0 || node.strokes.Length > 0;
                     if (NodeIsSubstitution(node, figmaImportProcessData)) break;
                     if (!needsImageComponent) break;
+                    if (!figmaImportProcessData.Settings.AttachFigmaImage) break; // user opted out of FigmaImage metadata
                     // Create as needed (in case an override has specified new properties)
                     var figmaImage = nodeGameObject.GetComponent<FigmaImage>();
                     if (figmaImage == null) figmaImage = nodeGameObject.AddComponent<FigmaImage>();

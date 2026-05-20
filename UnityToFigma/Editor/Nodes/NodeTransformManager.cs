@@ -2,12 +2,34 @@
 using UnityEngine;
 using UnityEngine.UI;
 using UnityToFigma.Editor.FigmaApi;
+using UnityToFigma.Editor.Settings;
 using UnityToFigma.Editor.Utils;
 
 namespace UnityToFigma.Editor.Nodes
 {
     public static class NodeTransformManager
     {
+        // Configured once per import (UnityToFigmaImporter.ImportDocument) so transform helpers can decide
+        // whether to attach LayoutElement without threading settings through every call.
+        public static LayoutElementAttachMode LayoutElementAttachMode = LayoutElementAttachMode.AutoLayoutOnly;
+
+        static bool ShouldAttachLayoutElement(Node figmaParentNode)
+        {
+            switch (LayoutElementAttachMode)
+            {
+                case LayoutElementAttachMode.Never: return false;
+                case LayoutElementAttachMode.Always: return true;
+                case LayoutElementAttachMode.AutoLayoutOnly:
+                    return figmaParentNode != null && figmaParentNode.layoutMode != Node.LayoutMode.NONE;
+                default: return true;
+            }
+        }
+
+        static LayoutElement EnsureLayoutElement(GameObject go, Node figmaParentNode)
+        {
+            if (!ShouldAttachLayoutElement(figmaParentNode)) return null;
+            return UnityUiUtils.GetOrAddComponent<LayoutElement>(go);
+        }
         /// <summary>
         /// Applies the transform of a Figma Node to a Unity RectTransform.
         /// </summary>
@@ -48,21 +70,22 @@ namespace UnityToFigma.Editor.Nodes
             // Apply the "size" figmaNode from figma to set size
             targetRectTransform.sizeDelta = new Vector2(figmaNode.size.x, figmaNode.size.y);
 
-            //Add a layout element and set its preferred size
-            LayoutElement layoutElement = UnityUiUtils.GetOrAddComponent<LayoutElement>(targetRectTransform.gameObject);
-            layoutElement.preferredWidth = figmaNode.size.x;
-            layoutElement.preferredHeight = figmaNode.size.y;
-
-            // SECTION / COMPONENT_SET / empty containers can ship without absoluteBoundingBox — fall back to size.
-            if (figmaNode.absoluteBoundingBox != null)
+            //Add a layout element and set its preferred size (skipped when parent isn't auto-layout per settings).
+            LayoutElement layoutElement = EnsureLayoutElement(targetRectTransform.gameObject, figmaParentNode);
+            if (layoutElement != null)
             {
-                layoutElement.minHeight = figmaNode.absoluteBoundingBox.height;
-                layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
-            }
-            else
-            {
-                layoutElement.minHeight = figmaNode.size.y;
-                layoutElement.minWidth = figmaNode.size.x;
+                layoutElement.preferredWidth = figmaNode.size.x;
+                layoutElement.preferredHeight = figmaNode.size.y;
+                if (figmaNode.absoluteBoundingBox != null)
+                {
+                    layoutElement.minHeight = figmaNode.absoluteBoundingBox.height;
+                    layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
+                }
+                else
+                {
+                    layoutElement.minHeight = figmaNode.size.y;
+                    layoutElement.minWidth = figmaNode.size.x;
+                }
             }
 
             // Apply constraints
@@ -156,20 +179,22 @@ namespace UnityToFigma.Editor.Nodes
                     $"[FigmaToUnity] Node '{figmaNode?.name}' ({figmaNode?.id}, type={figmaNode?.type}) has no absoluteBoundingBox — using zero size/position.");
                 targetRectTransform.sizeDelta = Vector2.zero;
                 targetRectTransform.anchoredPosition = Vector2.zero;
-                UnityUiUtils.GetOrAddComponent<LayoutElement>(targetRectTransform.gameObject);
+                EnsureLayoutElement(targetRectTransform.gameObject, figmaParentNode);
                 return;
             }
 
             // We'll use absolute bounding box size
             targetRectTransform.sizeDelta = new Vector2(figmaNode.absoluteBoundingBox.width, figmaNode.absoluteBoundingBox.height);
 
-            //Add a layout element and set its preferred size
-            LayoutElement layoutElement = UnityUiUtils.GetOrAddComponent<LayoutElement>(targetRectTransform.gameObject);
-            layoutElement.preferredWidth = figmaNode.absoluteBoundingBox.width;
-            layoutElement.preferredHeight = figmaNode.absoluteBoundingBox.height;
-
-            layoutElement.minHeight = figmaNode.absoluteBoundingBox.height;
-            layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
+            //Add a layout element and set its preferred size (skipped when parent isn't auto-layout per settings).
+            LayoutElement layoutElement = EnsureLayoutElement(targetRectTransform.gameObject, figmaParentNode);
+            if (layoutElement != null)
+            {
+                layoutElement.preferredWidth = figmaNode.absoluteBoundingBox.width;
+                layoutElement.preferredHeight = figmaNode.absoluteBoundingBox.height;
+                layoutElement.minHeight = figmaNode.absoluteBoundingBox.height;
+                layoutElement.minWidth = figmaNode.absoluteBoundingBox.width;
+            }
 
             // Position will be relative to parent absoluteBoundingBox (if it exists). Pages have no absoluteBoundingBox so assume pos of 0,0
             var figmaParentNodePosition = (figmaParentNode != null && figmaParentNode.absoluteBoundingBox != null)

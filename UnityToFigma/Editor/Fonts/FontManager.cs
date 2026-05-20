@@ -160,69 +160,125 @@ namespace UnityToFigma.Editor.Fonts
             return closestMatch;
         }
         
+        // Quantization steps for variant dedup. Set conservatively so visually-identical inputs collapse to
+        // one material asset: cosmetic float drift (figma JSON float roundtrip, fontSize-derived outline
+        // width, alpha epsilon) is below these thresholds, but real design differences exceed them.
+        const float ShadowDistanceQuantStep = 0.05f; // ~0.05px
+        const float OutlineThicknessQuantStep = 0.01f; // ~1% of normalized 0..0.5 outline width
+
         public static Material GetEffectMaterialPreset(FigmaFontMapEntry fontMapEntry, bool shadow, Color shadowColor,
             Vector2 shadowDistance, bool outline,
             Color outlineColor, float outlineThickness, UnityToFigmaSettings settings)
         {
             var paths = new FigmaImportPathResolver(settings);
-            // Do we have a matching material?
-            var materialPresets = fontMapEntry.FontmaterialVariations.Count;
-            
-            
-            foreach (var materialPreset in fontMapEntry.FontmaterialVariations)
-            {
-                bool isMatch = true;
-                if (materialPreset.ShadowEnabled != shadow) isMatch = false;
-                if (shadow && materialPreset.ShadowColor!=shadowColor) isMatch = false;
-                if (shadow && materialPreset.ShadowDistance!=shadowDistance) isMatch = false;
-                
-                if (materialPreset.OutlineEnabled != outline) isMatch = false;
-                if (outline && materialPreset.OutlineColor != outlineColor) isMatch = false;
-                if (outline && materialPreset.OutlineThickness != outlineThickness) isMatch = false;
 
-                if (isMatch) return materialPreset.MaterialPreset;
+            // Quantize float-y inputs so cosmetically identical variants share one material asset.
+            var qShadowColor = QuantizeColor(shadowColor);
+            var qShadowDist = QuantizeVec2(shadowDistance, ShadowDistanceQuantStep);
+            var qOutlineColor = QuantizeColor(outlineColor);
+            var qOutlineThickness = QuantizeFloat(outlineThickness, OutlineThicknessQuantStep);
+
+            // Memory lookup against already-built variants using the quantized signature.
+            foreach (var preset in fontMapEntry.FontmaterialVariations)
+            {
+                if (preset.ShadowEnabled != shadow) continue;
+                if (preset.OutlineEnabled != outline) continue;
+                if (shadow)
+                {
+                    if (QuantizeColor(preset.ShadowColor) != qShadowColor) continue;
+                    if (QuantizeVec2(preset.ShadowDistance, ShadowDistanceQuantStep) != qShadowDist) continue;
+                }
+                if (outline)
+                {
+                    if (QuantizeColor(preset.OutlineColor) != qOutlineColor) continue;
+                    if (QuantizeFloat(preset.OutlineThickness, OutlineThicknessQuantStep) != qOutlineThickness) continue;
+                }
+                return preset.MaterialPreset;
             }
-            // No match, create new preset
+
+            // Deterministic asset name derived from the quantized key — same signature => same file path,
+            // so re-importing or a fresh editor run reuses the existing .mat on disk instead of stacking
+            // _variant_N copies.
+            string shadowKey = shadow
+                ? $"s{qShadowColor:x8}_{(qShadowDist >> 32) & 0xFFFFFFFFL:X8}{qShadowDist & 0xFFFFFFFFL:X8}"
+                : "s0";
+            string outlineKey = outline
+                ? $"o{qOutlineColor:x8}_{(uint)qOutlineThickness:X4}"
+                : "o0";
+            var materialName = $"{fontMapEntry.FontAsset.name}_{shadowKey}_{outlineKey}";
+            var assetPath = $"{paths.FontMaterialPresetsDirectory}/{materialName}.mat";
+
+            // Disk hit: same path already exists — reuse it.
+            var existing = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
+            if (existing != null)
+            {
+                fontMapEntry.FontmaterialVariations.Add(new FontMaterialVariation
+                {
+                    ShadowEnabled = shadow,
+                    ShadowColor = shadowColor,
+                    ShadowDistance = shadowDistance,
+                    OutlineEnabled = outline,
+                    OutlineColor = outlineColor,
+                    OutlineThickness = outlineThickness,
+                    MaterialPreset = existing,
+                });
+                return existing;
+            }
+
             var newMaterialPreset = new Material(fontMapEntry.FontAsset.material);
             // We use a modified shader that handles distance from edge better
             newMaterialPreset.shader = Shader.Find("Figma/TextMeshPro");
-            
-            var materialName = $"{fontMapEntry.FontAsset.name}_variant_{materialPresets}";
             newMaterialPreset.name = materialName;
 
-            newMaterialPreset.SetKeyword(new LocalKeyword(newMaterialPreset.shader,"UNDERLAY_ON"),shadow);
-            
+            newMaterialPreset.SetKeyword(new LocalKeyword(newMaterialPreset.shader, "UNDERLAY_ON"), shadow);
             if (shadow)
             {
-                newMaterialPreset.SetFloat("_UnderlayOffsetX",0);
-                newMaterialPreset.SetFloat("_UnderlayOffsetY",-0.6f);
-                newMaterialPreset.SetColor("_UnderlayColor",shadowColor);
+                newMaterialPreset.SetFloat("_UnderlayOffsetX", 0);
+                newMaterialPreset.SetFloat("_UnderlayOffsetY", -0.6f);
+                newMaterialPreset.SetColor("_UnderlayColor", shadowColor);
             }
-            
-            newMaterialPreset.SetKeyword(new LocalKeyword(newMaterialPreset.shader,"OUTLINE_ON"),outline);
 
+            newMaterialPreset.SetKeyword(new LocalKeyword(newMaterialPreset.shader, "OUTLINE_ON"), outline);
             if (outline)
             {
-                // For now we'll just use a fixed value as this is proportional to font size not a fixed value
-                // Note we are using a modified shader to ensure outline is outside
-                
-                newMaterialPreset.SetFloat("_OutlineWidth",outlineThickness);
-                newMaterialPreset.SetColor("_OutlineColor",outlineColor);
+                newMaterialPreset.SetFloat("_OutlineWidth", outlineThickness);
+                newMaterialPreset.SetColor("_OutlineColor", outlineColor);
             }
-            
-            AssetDatabase.CreateAsset(newMaterialPreset, $"{paths.FontMaterialPresetsDirectory}/{materialName}.mat");
+
+            AssetDatabase.CreateAsset(newMaterialPreset, assetPath);
 
             fontMapEntry.FontmaterialVariations.Add(new FontMaterialVariation
             {
-                ShadowEnabled=shadow,
+                ShadowEnabled = shadow,
                 ShadowColor = shadowColor,
                 ShadowDistance = shadowDistance,
                 OutlineEnabled = outline,
                 OutlineColor = outlineColor,
                 OutlineThickness = outlineThickness,
-                MaterialPreset = newMaterialPreset
+                MaterialPreset = newMaterialPreset,
             });
             return newMaterialPreset;
+        }
+
+        static uint QuantizeColor(Color c)
+        {
+            byte r = (byte)Mathf.Clamp(Mathf.RoundToInt(c.r * 255f), 0, 255);
+            byte g = (byte)Mathf.Clamp(Mathf.RoundToInt(c.g * 255f), 0, 255);
+            byte b = (byte)Mathf.Clamp(Mathf.RoundToInt(c.b * 255f), 0, 255);
+            byte a = (byte)Mathf.Clamp(Mathf.RoundToInt(c.a * 255f), 0, 255);
+            return ((uint)r << 24) | ((uint)g << 16) | ((uint)b << 8) | a;
+        }
+
+        static int QuantizeFloat(float v, float step)
+        {
+            return Mathf.RoundToInt(v / step);
+        }
+
+        static long QuantizeVec2(Vector2 v, float step)
+        {
+            int xi = Mathf.RoundToInt(v.x / step);
+            int yi = Mathf.RoundToInt(v.y / step);
+            return ((long)xi << 32) | ((uint)yi & 0xFFFFFFFFL);
         }
         
     }
