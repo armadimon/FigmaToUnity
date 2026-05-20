@@ -318,6 +318,97 @@ namespace UnityToFigma.Editor.FigmaApi
         }
 
         /// <summary>
+        /// Download only the user-picked frames/components (not whole pages).
+        /// Calls GET /v1/files/{key}/nodes?ids=NODE_IDS&amp;geometry=paths so the response payload only contains
+        /// the selected subtrees. Rebuilds a synthetic FigmaFile where each CANVAS page only keeps the picked
+        /// children — anything not selected never reaches the importer.
+        /// </summary>
+        public static async Task<FigmaFile> GetFigmaDocumentBySelectedNodes(
+            string fileId,
+            string accessToken,
+            IList<Settings.FigmaNodeSelection> selections)
+        {
+            if (selections == null || selections.Count == 0)
+                throw new ArgumentException("selections is empty", nameof(selections));
+
+            var allNodeIds = new List<string>();
+            var seen = new HashSet<string>();
+            foreach (var s in selections)
+            {
+                if (s?.SelectedNodeIds == null) continue;
+                foreach (var id in s.SelectedNodeIds)
+                {
+                    if (string.IsNullOrEmpty(id) || !seen.Add(id)) continue;
+                    allNodeIds.Add(id);
+                }
+            }
+            if (allNodeIds.Count == 0)
+                throw new ArgumentException("No node ids selected across pages", nameof(selections));
+
+            var liteFile = await GetFigmaDocumentPagesLite(fileId, accessToken);
+            if (liteFile?.document == null)
+                throw new Exception("Pages-lite fetch returned no document");
+
+            var joined = string.Join(",", allNodeIds);
+            var url = $"https://api.figma.com/v1/files/{fileId}/nodes?ids={Uri.EscapeDataString(joined)}&geometry=paths";
+            var webRequest = await SendGetWithRetryAsync(url, accessToken);
+            if (webRequest.result != UnityWebRequest.Result.Success)
+            {
+                throw new Exception(
+                    $"{FormatWebRequestFailure(webRequest, "Figma nodes (selected nodes) API")} url={url}.");
+            }
+
+            FigmaFileNodes fileNodes;
+            try
+            {
+                fileNodes = JsonConvert.DeserializeObject<FigmaFileNodes>(webRequest.downloadHandler.text, CreateFigmaJsonSettings());
+            }
+            catch (Exception e)
+            {
+                throw new Exception($"Problem decoding Figma nodes JSON: {e}");
+            }
+            if (fileNodes?.nodes == null)
+                throw new Exception("Figma nodes response missing 'nodes' map");
+
+            // Rebuild document.children: keep only pages that have at least one resolved selected node,
+            // and replace each kept page's children with the selected subtrees in selection order.
+            var resultPages = new List<Node>();
+            foreach (var pageNode in liteFile.document.children)
+            {
+                if (pageNode == null || pageNode.type != NodeType.CANVAS) continue;
+                var sel = selections.FirstOrDefault(s => s != null && s.PageNodeId == pageNode.id);
+                if (sel == null || sel.SelectedNodeIds == null || sel.SelectedNodeIds.Count == 0) continue;
+
+                var newChildren = new List<Node>();
+                foreach (var nodeId in sel.SelectedNodeIds)
+                {
+                    if (fileNodes.nodes.TryGetValue(nodeId, out var miniFile) && miniFile?.document != null)
+                        newChildren.Add(miniFile.document);
+                    else
+                        Debug.LogWarning($"[FigmaToUnity] Selected node '{nodeId}' missing in nodes response.");
+                }
+                if (newChildren.Count == 0) continue;
+
+                pageNode.children = newChildren.ToArray();
+                resultPages.Add(pageNode);
+            }
+            liteFile.document.children = resultPages.ToArray();
+
+            var mergedComponents = new Dictionary<string, Component>();
+            var mergedStyles = new Dictionary<string, Style>();
+            foreach (var kv in fileNodes.nodes)
+            {
+                if (kv.Value?.components != null)
+                    foreach (var c in kv.Value.components) mergedComponents[c.Key] = c.Value;
+                if (kv.Value?.styles != null)
+                    foreach (var s in kv.Value.styles) mergedStyles[s.Key] = s.Value;
+            }
+            liteFile.components = mergedComponents;
+            liteFile.styles = mergedStyles;
+            return liteFile;
+        }
+
+        /// <summary>
         /// Download a Figma document by issuing a single GET /v1/files/{key}/nodes?ids=PAGE_IDS&amp;geometry=paths
         /// instead of the full GET file endpoint. Used when OnlyImportSelectedPages is on so the response payload
         /// stays small (one entry per selected page rather than the whole document), which both reduces HTTP/2

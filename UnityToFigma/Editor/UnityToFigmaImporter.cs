@@ -102,12 +102,28 @@ namespace UnityToFigma.Editor
                     return;
                 }
 
-                figmaFile = await DownloadFigmaDocumentBySelectedPages(
-                    s_UnityToFigmaSettings.FileId, enabledPageIdList);
+                // Restrict the saved node-level selection to currently enabled pages so we don't ask figma
+                // for nodes whose parent page the user has now unchecked.
+                var pageAllow = new HashSet<string>(enabledPageIdList);
+                var nodeSelections = s_UnityToFigmaSettings.NodeSelections
+                    .Where(s => s != null && pageAllow.Contains(s.PageNodeId)
+                                && s.SelectedNodeIds != null && s.SelectedNodeIds.Count > 0)
+                    .ToList();
+
+                if (nodeSelections.Count > 0)
+                {
+                    // Node-level fetch — figma returns only the picked subtrees.
+                    figmaFile = await DownloadFigmaDocumentBySelectedNodes(
+                        s_UnityToFigmaSettings.FileId, nodeSelections);
+                }
+                else
+                {
+                    // Page-level fetch — entire pages, but at least we skip unrelated pages.
+                    figmaFile = await DownloadFigmaDocumentBySelectedPages(
+                        s_UnityToFigmaSettings.FileId, enabledPageIdList);
+                }
                 if (figmaFile == null) return;
 
-                // Trim each page's direct children to the user-picked frames if any node selection exists.
-                ApplyNodeSelectionFilter(figmaFile, s_UnityToFigmaSettings.NodeSelections);
                 pageNodeList = FigmaDataUtils.GetPageNodes(figmaFile);
             }
             else
@@ -121,20 +137,29 @@ namespace UnityToFigma.Editor
         }
 
         /// <summary>
-        /// Trim each page's direct children based on FigmaImportPicker selection. Pages with no
-        /// matching FigmaNodeSelection entry (or empty selection list) are left as-is.
+        /// Download a synthesized FigmaFile that only contains the user-selected nodes (frames/components),
+        /// not entire pages. Smallest possible response payload — used when the picker captured node-level
+        /// selections via FigmaImportPicker.
         /// </summary>
-        static void ApplyNodeSelectionFilter(FigmaFile file, List<FigmaNodeSelection> selections)
+        public static async Task<FigmaFile> DownloadFigmaDocumentBySelectedNodes(
+            string fileId, IList<FigmaNodeSelection> selections)
         {
-            if (file?.document?.children == null || selections == null || selections.Count == 0) return;
-            foreach (var pageNode in file.document.children)
+            EditorUtility.DisplayProgressBar(PROGRESS_BOX_TITLE,
+                "Downloading selected node(s)", 0);
+            try
             {
-                if (pageNode == null || pageNode.type != NodeType.CANVAS) continue;
-                var sel = selections.FirstOrDefault(s => s.PageNodeId == pageNode.id);
-                if (sel == null || sel.SelectedNodeIds == null || sel.SelectedNodeIds.Count == 0) continue;
-                if (pageNode.children == null) continue;
-                var allow = new HashSet<string>(sel.SelectedNodeIds);
-                pageNode.children = pageNode.children.Where(c => c != null && allow.Contains(c.id)).ToArray();
+                return await FigmaApiUtils.GetFigmaDocumentBySelectedNodes(fileId, s_PersonalAccessToken, selections);
+            }
+            catch (Exception e)
+            {
+                ReportError(
+                    "Error downloading Figma nodes - Check your selection and personal access key.",
+                    e.ToString());
+                return null;
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
             }
         }
 
